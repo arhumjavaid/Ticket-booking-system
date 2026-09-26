@@ -1,0 +1,35 @@
+# Shared Dockerfile for every Node.js service in the monorepo (api,
+# booking-service, worker, notification/analytics/search-service). Building
+# the whole workspace once and then selecting a WORKDIR per image keeps
+# this file single-sourced; Docker's layer cache means only the first
+# service build pays the full `npm install && npm run build` cost - every
+# other service's `docker compose build` reuses those identical layers.
+#
+# Documented simplification: production would prune each final image down
+# to just its own dist/ + production dependencies (e.g. via
+# `npm prune --omit=dev` scoped per workspace, or a proper monorepo
+# pruning tool) instead of shipping the whole monorepo in every image.
+FROM node:20-alpine AS base
+# Prisma's query engine links against OpenSSL; without it present Prisma
+# misdetects the libssl version and fails at runtime with a confusing
+# "Unable to require(...).so.node" error.
+RUN apk add --no-cache openssl
+WORKDIR /app
+
+COPY package.json ./
+COPY tsconfig.base.json ./
+COPY packages ./packages
+COPY apps ./apps
+COPY services ./services
+
+RUN npm install --workspaces --include-workspace-root
+RUN npm run build --workspaces --if-present
+
+FROM node:20-alpine AS runtime
+RUN apk add --no-cache openssl
+ARG SERVICE_PATH
+ENV SERVICE_PATH=${SERVICE_PATH}
+WORKDIR /app
+COPY --from=base /app /app
+WORKDIR /app/${SERVICE_PATH}
+CMD ["node", "dist/index.js"]

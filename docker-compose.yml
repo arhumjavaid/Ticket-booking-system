@@ -1,0 +1,376 @@
+name: distributed-ticket-booking
+
+x-common-env: &common-env
+  NODE_ENV: development
+  JWT_SECRET: ${JWT_SECRET:-dev-super-secret-change-in-production}
+  JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-1h}
+  INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:-dev-internal-token-change-in-production}
+  REDIS_URL: redis://redis:6379
+  REDIS_LOCK_TTL_MS: 10000
+  SEAT_HOLD_TTL_SECONDS: 300
+  RABBITMQ_URL: amqp://ticketing:ticketing@rabbitmq:5672
+  RABBITMQ_EXCHANGE: booking.events
+  LOG_LEVEL: info
+  DATABASE_URL: postgresql://ticketing:ticketing@postgres-primary:5432/ticketing?schema=public
+  REPLICA_DATABASE_URLS: postgresql://ticketing:ticketing@postgres-replica-1:5432/ticketing?schema=public,postgresql://ticketing:ticketing@postgres-replica-2:5432/ticketing?schema=public
+  SHARDING_ENABLED: ${SHARDING_ENABLED:-false}
+  SHARD_COUNT: ${SHARD_COUNT:-3}
+  SHARD_0_URL: postgresql://ticketing:ticketing@postgres-primary:5432/ticketing?schema=public
+  SHARD_1_URL: postgresql://ticketing:ticketing@postgres-shard-1:5432/ticketing?schema=public
+  SHARD_2_URL: postgresql://ticketing:ticketing@postgres-shard-2:5432/ticketing?schema=public
+
+services:
+  # ---------------- PostgreSQL Cluster ----------------
+  postgres-primary:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ticketing
+      POSTGRES_PASSWORD: ticketing
+      POSTGRES_DB: ticketing
+      REPLICATION_PASSWORD: replicator_pw
+    volumes:
+      - pgdata-primary:/var/lib/postgresql/data
+      - ./infrastructure/postgres/primary/postgresql.conf:/etc/postgresql/postgresql.conf:ro
+      - ./infrastructure/postgres/primary/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
+      - ./infrastructure/postgres/primary/init-replication-user.sh:/docker-entrypoint-initdb.d/init-replication-user.sh:ro
+    command: ['postgres', '-c', 'config_file=/etc/postgresql/postgresql.conf', '-c', 'hba_file=/etc/postgresql/pg_hba.conf']
+    ports: ['5432:5432']
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ticketing']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  postgres-replica-1:
+    build: ./infrastructure/postgres/replica
+    environment:
+      PGDATA: /var/lib/postgresql/data
+      PRIMARY_HOST: postgres-primary
+      REPLICATION_USER: replicator
+      REPLICATION_PASSWORD: replicator_pw
+      POSTGRES_PASSWORD: ticketing
+    depends_on:
+      postgres-primary:
+        condition: service_healthy
+    volumes:
+      - pgdata-replica-1:/var/lib/postgresql/data
+    ports: ['5433:5432']
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ticketing']
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+
+  postgres-replica-2:
+    build: ./infrastructure/postgres/replica
+    environment:
+      PGDATA: /var/lib/postgresql/data
+      PRIMARY_HOST: postgres-primary
+      REPLICATION_USER: replicator
+      REPLICATION_PASSWORD: replicator_pw
+      POSTGRES_PASSWORD: ticketing
+    depends_on:
+      postgres-primary:
+        condition: service_healthy
+    volumes:
+      - pgdata-replica-2:/var/lib/postgresql/data
+    ports: ['5434:5432']
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ticketing']
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+
+  # Optional shards (section 7). Disabled unless started with:
+  #   docker compose --profile sharding up
+  # and SHARDING_ENABLED=true in .env
+  postgres-shard-1:
+    image: postgres:16-alpine
+    profiles: ['sharding']
+    environment:
+      POSTGRES_USER: ticketing
+      POSTGRES_PASSWORD: ticketing
+      POSTGRES_DB: ticketing
+    volumes:
+      - pgdata-shard-1:/var/lib/postgresql/data
+    ports: ['5435:5432']
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ticketing']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  postgres-shard-2:
+    image: postgres:16-alpine
+    profiles: ['sharding']
+    environment:
+      POSTGRES_USER: ticketing
+      POSTGRES_PASSWORD: ticketing
+      POSTGRES_DB: ticketing
+    volumes:
+      - pgdata-shard-2:/var/lib/postgresql/data
+    ports: ['5436:5432']
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ticketing']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ---------------- Redis ----------------
+  redis:
+    image: redis:7-alpine
+    command: ['redis-server', '--appendonly', 'yes']
+    volumes: ['redis-data:/data']
+    ports: ['6379:6379']
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ---------------- Message Queue ----------------
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: ticketing
+      RABBITMQ_DEFAULT_PASS: ticketing
+    ports: ['5672:5672', '15672:15672']
+    volumes: ['rabbitmq-data:/var/lib/rabbitmq']
+    healthcheck:
+      test: ['CMD', 'rabbitmq-diagnostics', '-q', 'ping']
+      interval: 5s
+      timeout: 5s
+      retries: 15
+
+  # ---------------- Search ----------------
+  opensearch:
+    image: opensearchproject/opensearch:2.17.0
+    environment:
+      - discovery.type=single-node
+      - plugins.security.disabled=true
+      - OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m
+      - DISABLE_INSTALL_DEMO_CONFIG=true
+    ports: ['9200:9200']
+    volumes: ['opensearch-data:/usr/share/opensearch/data']
+    healthcheck:
+      test: ['CMD-SHELL', 'curl -sf http://localhost:9200/_cluster/health || exit 1']
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+
+  # ---------------- Analytics ----------------
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.8-alpine
+    environment:
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: clickhouse
+      CLICKHOUSE_DB: analytics
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+      - ./infrastructure/clickhouse/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    ports: ['8123:8123']
+    healthcheck:
+      test: ['CMD-SHELL', 'wget --spider -q http://127.0.0.1:8123/ping || exit 1']
+      interval: 10s
+      timeout: 5s
+      retries: 15
+
+  # ---------------- Observability ----------------
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    volumes:
+      - ./infrastructure/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports: ['9090:9090']
+
+  grafana:
+    image: grafana/grafana:11.2.0
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_AUTH_ANONYMOUS_ENABLED: 'true'
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./infrastructure/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infrastructure/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports: ['3001:3000']
+    depends_on: ['prometheus']
+
+  # ---------------- Migrations / Seed ----------------
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile.node
+      args: { SERVICE_PATH: packages/database }
+    profiles: ['tools']
+    environment:
+      <<: *common-env
+    working_dir: /app/packages/database
+    command: ['sh', '-c', 'npx prisma migrate deploy --schema prisma/schema.prisma && npx ts-node prisma/seed.ts']
+    depends_on:
+      postgres-primary:
+        condition: service_healthy
+
+  # ---------------- API layer (stateless, horizontally scaled) ----------------
+  api-1: &api-service
+    build:
+      context: .
+      dockerfile: Dockerfile.node
+      args: { SERVICE_PATH: apps/api }
+    environment:
+      <<: *common-env
+      SERVICE_NAME: api
+      API_INSTANCE_ID: api-1
+      PORT: 3000
+      CORS_ORIGIN: '*'
+      BOOKING_SERVICE_URL: http://booking-service:4000
+      SEARCH_SERVICE_URL: http://search-service:4300
+      ANALYTICS_SERVICE_URL: http://analytics-service:4200
+      RATE_LIMIT_LOGIN_PER_MIN: ${RATE_LIMIT_LOGIN_PER_MIN:-5}
+      RATE_LIMIT_BROWSE_PER_MIN: ${RATE_LIMIT_BROWSE_PER_MIN:-100}
+      RATE_LIMIT_BOOKING_PER_MIN: ${RATE_LIMIT_BOOKING_PER_MIN:-10}
+      RATE_LIMIT_HOLD_PER_MIN: ${RATE_LIMIT_HOLD_PER_MIN:-20}
+    depends_on:
+      postgres-primary: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+
+  api-2:
+    <<: *api-service
+    environment:
+      <<: *common-env
+      SERVICE_NAME: api
+      API_INSTANCE_ID: api-2
+      PORT: 3000
+      CORS_ORIGIN: '*'
+      BOOKING_SERVICE_URL: http://booking-service:4000
+      SEARCH_SERVICE_URL: http://search-service:4300
+      ANALYTICS_SERVICE_URL: http://analytics-service:4200
+      RATE_LIMIT_LOGIN_PER_MIN: ${RATE_LIMIT_LOGIN_PER_MIN:-5}
+      RATE_LIMIT_BROWSE_PER_MIN: ${RATE_LIMIT_BROWSE_PER_MIN:-100}
+      RATE_LIMIT_BOOKING_PER_MIN: ${RATE_LIMIT_BOOKING_PER_MIN:-10}
+      RATE_LIMIT_HOLD_PER_MIN: ${RATE_LIMIT_HOLD_PER_MIN:-20}
+
+  api-3:
+    <<: *api-service
+    environment:
+      <<: *common-env
+      SERVICE_NAME: api
+      API_INSTANCE_ID: api-3
+      PORT: 3000
+      CORS_ORIGIN: '*'
+      BOOKING_SERVICE_URL: http://booking-service:4000
+      SEARCH_SERVICE_URL: http://search-service:4300
+      ANALYTICS_SERVICE_URL: http://analytics-service:4200
+      RATE_LIMIT_LOGIN_PER_MIN: ${RATE_LIMIT_LOGIN_PER_MIN:-5}
+      RATE_LIMIT_BROWSE_PER_MIN: ${RATE_LIMIT_BROWSE_PER_MIN:-100}
+      RATE_LIMIT_BOOKING_PER_MIN: ${RATE_LIMIT_BOOKING_PER_MIN:-10}
+      RATE_LIMIT_HOLD_PER_MIN: ${RATE_LIMIT_HOLD_PER_MIN:-20}
+
+  # ---------------- Booking Service (dedicated) ----------------
+  booking-service:
+    build:
+      context: .
+      dockerfile: Dockerfile.node
+      args: { SERVICE_PATH: apps/booking-service }
+    environment:
+      <<: *common-env
+      SERVICE_NAME: booking-service
+      BOOKING_SERVICE_PORT: 4000
+    depends_on:
+      postgres-primary: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+
+  # ---------------- Background Worker ----------------
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.node
+      args: { SERVICE_PATH: apps/worker }
+    environment:
+      <<: *common-env
+      SERVICE_NAME: worker
+      WORKER_PORT: 4500
+      WORKER_POLL_INTERVAL_MS: 5000
+    depends_on:
+      postgres-primary: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+
+  # ---------------- Async consumers ----------------
+  notification-service:
+    build:
+      context: .
+      dockerfile: Dockerfile.node
+      args: { SERVICE_PATH: services/notification-service }
+    environment:
+      <<: *common-env
+      SERVICE_NAME: notification-service
+      NOTIFICATION_SERVICE_PORT: 4100
+    depends_on:
+      postgres-primary: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+
+  analytics-service:
+    build:
+      context: .
+      dockerfile: Dockerfile.node
+      args: { SERVICE_PATH: services/analytics-service }
+    environment:
+      <<: *common-env
+      SERVICE_NAME: analytics-service
+      ANALYTICS_SERVICE_PORT: 4200
+      CLICKHOUSE_URL: http://clickhouse:8123
+      CLICKHOUSE_DATABASE: analytics
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: clickhouse
+    depends_on:
+      clickhouse: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+
+  search-service:
+    build:
+      context: .
+      dockerfile: Dockerfile.node
+      args: { SERVICE_PATH: services/search-service }
+    environment:
+      <<: *common-env
+      SERVICE_NAME: search-service
+      SEARCH_SERVICE_PORT: 4300
+      OPENSEARCH_URL: http://opensearch:9200
+      OPENSEARCH_EVENTS_INDEX: events
+    depends_on:
+      opensearch: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+      postgres-primary: { condition: service_healthy }
+
+  # ---------------- Edge layer ----------------
+  frontend:
+    build:
+      context: .
+      dockerfile: apps/frontend/Dockerfile
+    environment:
+      VITE_API_BASE_URL: /api
+    ports: ['5173:5173']
+
+  nginx:
+    image: nginx:1.27-alpine
+    volumes:
+      - ./infrastructure/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    ports: ['8080:80']
+    depends_on: ['api-1', 'api-2', 'api-3', 'frontend']
+
+volumes:
+  pgdata-primary:
+  pgdata-replica-1:
+  pgdata-replica-2:
+  pgdata-shard-1:
+  pgdata-shard-2:
+  redis-data:
+  rabbitmq-data:
+  opensearch-data:
+  clickhouse-data:
+  grafana-data:

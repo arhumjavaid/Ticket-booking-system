@@ -1,0 +1,14 @@
+node_modules
+**/node_modules
+dist
+**/dist
+.git
+coverage
+**/coverage
+*.log
+.env
+frontend/dist
+apps/frontend/node_modules
+tests
+docs
+k6-results

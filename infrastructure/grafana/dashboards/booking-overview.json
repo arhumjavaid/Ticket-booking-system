@@ -1,0 +1,59 @@
+{
+  "title": "Distributed Ticket Booking - Overview",
+  "uid": "booking-overview",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "5s",
+  "time": { "from": "now-15m", "to": "now" },
+  "panels": [
+    {
+      "id": 1, "title": "HTTP Requests/sec by instance", "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [{ "expr": "sum(rate(http_requests_total[1m])) by (instance)", "legendFormat": "{{instance}}" }]
+    },
+    {
+      "id": 2, "title": "HTTP p95 latency", "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "targets": [{ "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[1m])) by (le, route))", "legendFormat": "{{route}}" }]
+    },
+    {
+      "id": 3, "title": "Booking attempts vs success vs failure", "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "targets": [
+        { "expr": "sum(rate(booking_attempts_total[1m]))", "legendFormat": "attempts" },
+        { "expr": "sum(rate(booking_success_total[1m]))", "legendFormat": "success" },
+        { "expr": "sum(rate(booking_failure_total[1m]))", "legendFormat": "failure" }
+      ]
+    },
+    {
+      "id": 4, "title": "Seat booking conflicts/sec", "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "targets": [{ "expr": "sum(rate(seat_booking_conflict_total[1m]))", "legendFormat": "conflicts" }]
+    },
+    {
+      "id": 5, "title": "Redis cache hit ratio", "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "targets": [
+        { "expr": "sum(rate(redis_cache_hits_total[1m])) / (sum(rate(redis_cache_hits_total[1m])) + sum(rate(redis_cache_misses_total[1m])))", "legendFormat": "hit ratio" }
+      ]
+    },
+    {
+      "id": 6, "title": "Active connections & concurrent bookings", "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "targets": [
+        { "expr": "sum(active_connections)", "legendFormat": "active connections" },
+        { "expr": "sum(concurrent_bookings)", "legendFormat": "concurrent bookings" }
+      ]
+    },
+    {
+      "id": 7, "title": "Queue processing failures/sec", "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 24 },
+      "targets": [{ "expr": "sum(rate(queue_processing_failures_total[1m])) by (queue)", "legendFormat": "{{queue}}" }]
+    },
+    {
+      "id": 8, "title": "Database query duration p95", "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 24 },
+      "targets": [{ "expr": "histogram_quantile(0.95, sum(rate(database_query_duration_seconds_bucket[1m])) by (le, operation))", "legendFormat": "{{operation}}" }]
+    }
+  ]
+}

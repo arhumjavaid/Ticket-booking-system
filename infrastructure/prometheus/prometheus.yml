@@ -1,0 +1,44 @@
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: 'api'
+    static_configs:
+      - targets: ['api-1:3000', 'api-2:3000', 'api-3:3000']
+        labels:
+          layer: 'api'
+
+  - job_name: 'booking-service'
+    static_configs:
+      - targets: ['booking-service:4000']
+        labels:
+          layer: 'booking-service'
+
+  - job_name: 'worker'
+    static_configs:
+      - targets: ['worker:4500']
+        labels:
+          layer: 'worker'
+
+  - job_name: 'notification-service'
+    static_configs:
+      - targets: ['notification-service:4100']
+        labels:
+          layer: 'services'
+
+  - job_name: 'analytics-service'
+    static_configs:
+      - targets: ['analytics-service:4200']
+        labels:
+          layer: 'services'
+
+  - job_name: 'search-service'
+    static_configs:
+      - targets: ['search-service:4300']
+        labels:
+          layer: 'services'
+
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']

@@ -1,0 +1,285 @@
+// Distributed Ticket Booking System - Prisma Schema
+// This schema is applied identically to the primary (and, when sharding is
+// enabled, to every shard). Read replicas receive it via PostgreSQL
+// streaming replication (physical WAL replay), NOT via a second migration
+// run — see packages/database/src/client.ts for the read/write routing
+// layer and packages/database/src/shardRouter.ts for sharding.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  USER
+  ADMIN
+}
+
+enum EventStatus {
+  DRAFT
+  PUBLISHED
+  CANCELLED
+}
+
+enum EventSeatStatus {
+  AVAILABLE
+  HELD
+  BOOKED
+  BLOCKED
+}
+
+enum SeatHoldStatus {
+  ACTIVE
+  EXPIRED
+  CONFIRMED
+  RELEASED
+}
+
+enum BookingStatus {
+  PENDING
+  CONFIRMED
+  CANCELLED
+  FAILED
+}
+
+enum PaymentStatus {
+  PENDING
+  COMPLETED
+  FAILED
+  REFUNDED
+}
+
+enum NotificationStatus {
+  PENDING
+  SENT
+  FAILED
+}
+
+model User {
+  id           String   @id @default(uuid())
+  email        String   @unique
+  passwordHash String   @map("password_hash")
+  name         String
+  role         UserRole @default(USER)
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  bookings      Booking[]
+  seatHolds     SeatHold[]
+  notifications Notification[]
+  auditLogs     AuditLog[]
+  createdEvents Event[]        @relation("EventCreatedBy")
+
+  @@map("users")
+}
+
+model Venue {
+  id        String   @id @default(uuid())
+  name      String
+  city      String
+  address   String
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  sections VenueSection[]
+  events   Event[]
+
+  @@index([city])
+  @@map("venues")
+}
+
+model VenueSection {
+  id        String   @id @default(uuid())
+  venueId   String   @map("venue_id")
+  name      String
+  createdAt DateTime @default(now()) @map("created_at")
+
+  venue Venue  @relation(fields: [venueId], references: [id], onDelete: Cascade)
+  seats Seat[]
+
+  @@index([venueId])
+  @@map("venue_sections")
+}
+
+model Seat {
+  id             String  @id @default(uuid())
+  venueSectionId String  @map("venue_section_id")
+  rowLabel       String  @map("row_label")
+  seatNumber     Int     @map("seat_number")
+  seatType       String  @default("REGULAR") @map("seat_type")
+
+  section    VenueSection @relation(fields: [venueSectionId], references: [id], onDelete: Cascade)
+  eventSeats EventSeat[]
+
+  @@unique([venueSectionId, rowLabel, seatNumber])
+  @@map("seats")
+}
+
+model Event {
+  id          String      @id @default(uuid())
+  venueId     String      @map("venue_id")
+  name        String
+  description String
+  category    String
+  tags        String[]    @default([])
+  startsAt    DateTime    @map("starts_at")
+  endsAt      DateTime    @map("ends_at")
+  basePrice   Decimal     @map("base_price") @db.Decimal(10, 2)
+  status      EventStatus @default(DRAFT)
+  createdById String?     @map("created_by")
+  createdAt   DateTime    @default(now()) @map("created_at")
+  updatedAt   DateTime    @updatedAt @map("updated_at")
+
+  venue      Venue       @relation(fields: [venueId], references: [id])
+  createdBy  User?       @relation("EventCreatedBy", fields: [createdById], references: [id])
+  eventSeats EventSeat[]
+  bookings   Booking[]
+  seatHolds  SeatHold[]
+
+  @@index([startsAt])
+  @@index([category])
+  @@map("events")
+}
+
+// event_seats represents inventory of ONE physical seat for ONE event.
+// The same physical Seat has an independent EventSeat row per Event.
+model EventSeat {
+  id            String           @id @default(uuid())
+  eventId       String           @map("event_id")
+  seatId        String           @map("seat_id")
+  status        EventSeatStatus  @default(AVAILABLE)
+  price         Decimal          @db.Decimal(10, 2)
+  version       Int              @default(0)
+  heldBy        String?          @map("held_by")
+  holdExpiresAt DateTime?        @map("hold_expires_at")
+  updatedAt     DateTime         @updatedAt @map("updated_at")
+
+  event        Event          @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  seat         Seat           @relation(fields: [seatId], references: [id])
+  bookingItems BookingItem[]
+  seatHolds    SeatHold[]
+
+  @@unique([eventId, seatId])
+  @@index([eventId, status])
+  @@map("event_seats")
+}
+
+model SeatHold {
+  id        String         @id @default(uuid())
+  eventId   String         @map("event_id")
+  seatId    String         @map("seat_id")
+  eventSeatId String       @map("event_seat_id")
+  userId    String         @map("user_id")
+  status    SeatHoldStatus @default(ACTIVE)
+  expiresAt DateTime       @map("expires_at")
+  createdAt DateTime       @default(now()) @map("created_at")
+
+  event     Event     @relation(fields: [eventId], references: [id])
+  eventSeat EventSeat @relation(fields: [eventSeatId], references: [id])
+  user      User      @relation(fields: [userId], references: [id])
+
+  @@index([eventId, seatId])
+  @@index([expiresAt])
+  @@map("seat_holds")
+}
+
+model Booking {
+  id             String        @id @default(uuid())
+  userId         String        @map("user_id")
+  eventId        String        @map("event_id")
+  status         BookingStatus @default(PENDING)
+  totalAmount    Decimal       @map("total_amount") @db.Decimal(10, 2)
+  idempotencyKey String?       @unique @map("idempotency_key")
+  createdAt      DateTime      @default(now()) @map("created_at")
+  updatedAt      DateTime      @updatedAt @map("updated_at")
+
+  user  User          @relation(fields: [userId], references: [id])
+  event Event         @relation(fields: [eventId], references: [id])
+  items BookingItem[]
+  payment Payment?
+
+  @@index([userId])
+  @@index([eventId])
+  @@map("bookings")
+}
+
+model BookingItem {
+  id          String   @id @default(uuid())
+  bookingId   String   @map("booking_id")
+  eventSeatId String   @map("event_seat_id")
+  seatId      String   @map("seat_id")
+  price       Decimal  @db.Decimal(10, 2)
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  booking   Booking   @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  eventSeat EventSeat @relation(fields: [eventSeatId], references: [id])
+
+  @@index([bookingId])
+  @@map("booking_items")
+}
+
+model Payment {
+  id             String        @id @default(uuid())
+  bookingId      String        @unique @map("booking_id")
+  amount         Decimal       @db.Decimal(10, 2)
+  status         PaymentStatus @default(PENDING)
+  provider       String        @default("MOCK")
+  transactionRef String        @map("transaction_ref")
+  createdAt      DateTime      @default(now()) @map("created_at")
+  updatedAt      DateTime      @updatedAt @map("updated_at")
+
+  booking Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+
+  @@map("payments")
+}
+
+model Notification {
+  id        String              @id @default(uuid())
+  userId    String              @map("user_id")
+  type      String
+  channel   String              @default("EMAIL")
+  payload   Json
+  status    NotificationStatus  @default(PENDING)
+  createdAt DateTime            @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@map("notifications")
+}
+
+model AuditLog {
+  id           String   @id @default(uuid())
+  actorId      String?  @map("actor_id")
+  action       String
+  resourceType String   @map("resource_type")
+  resourceId   String?  @map("resource_id")
+  metadata     Json?
+  requestId    String?  @map("request_id")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  actor User? @relation(fields: [actorId], references: [id])
+
+  @@index([resourceType, resourceId])
+  @@map("audit_logs")
+}
+
+// Persists idempotency results so a repeated booking request with the same
+// Idempotency-Key returns the original response instead of double-booking.
+model IdempotencyKey {
+  key            String   @id
+  userId         String   @map("user_id")
+  endpoint       String
+  requestHash    String   @map("request_hash")
+  responseStatus Int?     @map("response_status")
+  responseBody   Json?    @map("response_body")
+  bookingId      String?  @map("booking_id")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@index([userId])
+  @@map("idempotency_keys")
+}
