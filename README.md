@@ -118,6 +118,7 @@ Load tests (k6) and failure-injection scripts are documented separately in `docs
 
 | Doc | Covers |
 |---|---|
+| [`docs/IMPLEMENTATION.md`](docs/IMPLEMENTATION.md) | The complete A-Z build narrative: decisions, phases, every file, test results, and the real bugs found while validating it |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Full architecture + Mermaid diagram |
 | [`docs/ARCHITECTURE_AUDIT.md`](docs/ARCHITECTURE_AUDIT.md) | Per-component files/responsibility/connections/failure-behavior/test-coverage table |
 | [`docs/ERD.md`](docs/ERD.md) | Database schema + Mermaid ER diagram |

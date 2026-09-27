@@ -1,0 +1,452 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Ticket Booking Runtime Architecture",
+    "output": "runtime-architecture.html",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/arhumjavaid/Ticket-booking-system",
+      "provider": "github",
+      "revision": "3871e27a78a724d51f34e76dd5e87f57e2edef17"
+    },
+    "viewBox": [
+      1360,
+      412
+    ],
+    "views": [
+      {
+        "id": "booking-path",
+        "label": "Primary booking path",
+        "focus": [
+          "clients",
+          "nginx",
+          "api",
+          "booking",
+          "redis",
+          "pgprimary"
+        ],
+        "note": "One seat reservation from the browser to a committed row in the primary."
+      },
+      {
+        "id": "read-path",
+        "label": "Read tier",
+        "focus": [
+          "api",
+          "pgreplicas",
+          "pgprimary"
+        ],
+        "note": "Browsing and history reads land on replicas and never touch the write path."
+      },
+      {
+        "id": "async-plane",
+        "label": "Async plane",
+        "focus": [
+          "booking",
+          "mq",
+          "consumers",
+          "opensearch",
+          "clickhouse",
+          "worker"
+        ],
+        "note": "Everything downstream of the commit; none of it can block a booking."
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "clients",
+      "type": "external",
+      "label": "Clients",
+      "sublabel": "Browser \u00b7 SSE",
+      "pos": [
+        40,
+        180
+      ],
+      "size": [
+        130,
+        58
+      ]
+    },
+    {
+      "id": "nginx",
+      "type": "cloud",
+      "label": "Nginx",
+      "sublabel": "least_conn :8080",
+      "tag": "only published port",
+      "pos": [
+        255,
+        180
+      ],
+      "size": [
+        135,
+        58
+      ],
+      "sources": [
+        {
+          "path": "infrastructure/nginx/nginx.conf",
+          "label": "upstream api_servers"
+        }
+      ]
+    },
+    {
+      "id": "api",
+      "type": "backend",
+      "label": "API \u00d73",
+      "sublabel": "stateless",
+      "pos": [
+        475,
+        180
+      ],
+      "size": [
+        130,
+        58
+      ],
+      "sources": [
+        {
+          "path": "apps/api/src/index.ts"
+        }
+      ]
+    },
+    {
+      "id": "booking",
+      "type": "backend",
+      "label": "Booking Service",
+      "sublabel": "sole writer",
+      "pos": [
+        690,
+        180
+      ],
+      "size": [
+        150,
+        58
+      ],
+      "sources": [
+        {
+          "path": "apps/booking-service/src/services/bookingService.ts"
+        }
+      ]
+    },
+    {
+      "id": "pgprimary",
+      "type": "database",
+      "label": "Postgres Primary",
+      "sublabel": "all writes",
+      "pos": [
+        925,
+        180
+      ],
+      "size": [
+        150,
+        58
+      ],
+      "sources": [
+        {
+          "path": "packages/database/src/client.ts",
+          "label": "writeDB"
+        }
+      ]
+    },
+    {
+      "id": "pgreplicas",
+      "type": "database",
+      "label": "Replicas \u00d72",
+      "sublabel": "hot standby",
+      "pos": [
+        1160,
+        180
+      ],
+      "size": [
+        140,
+        58
+      ],
+      "sources": [
+        {
+          "path": "packages/database/src/client.ts",
+          "label": "readDB"
+        }
+      ]
+    },
+    {
+      "id": "redis",
+      "type": "database",
+      "label": "Redis",
+      "sublabel": "lock \u00b7 cache \u00b7 bloom",
+      "pos": [
+        690,
+        80
+      ],
+      "size": [
+        150,
+        48
+      ],
+      "sources": [
+        {
+          "path": "packages/redis/src/lock.ts"
+        }
+      ]
+    },
+    {
+      "id": "worker",
+      "type": "backend",
+      "label": "Worker",
+      "sublabel": "hold sweep",
+      "pos": [
+        925,
+        80
+      ],
+      "size": [
+        150,
+        48
+      ],
+      "sources": [
+        {
+          "path": "apps/worker/src/holdExpiry.ts"
+        }
+      ]
+    },
+    {
+      "id": "mq",
+      "type": "messagebus",
+      "label": "RabbitMQ",
+      "sublabel": "booking.events",
+      "pos": [
+        690,
+        300
+      ],
+      "size": [
+        150,
+        48
+      ],
+      "sources": [
+        {
+          "path": "packages/messaging/src/publisher.ts"
+        }
+      ]
+    },
+    {
+      "id": "consumers",
+      "type": "backend",
+      "label": "Consumers \u00d73",
+      "sublabel": "retry + DLQ",
+      "pos": [
+        925,
+        300
+      ],
+      "size": [
+        150,
+        48
+      ],
+      "sources": [
+        {
+          "path": "packages/messaging/src/consumer.ts"
+        }
+      ]
+    },
+    {
+      "id": "opensearch",
+      "type": "database",
+      "label": "OpenSearch",
+      "sublabel": "event index",
+      "pos": [
+        1160,
+        274
+      ],
+      "size": [
+        140,
+        40
+      ]
+    },
+    {
+      "id": "clickhouse",
+      "type": "database",
+      "label": "ClickHouse",
+      "sublabel": "analytics",
+      "pos": [
+        1160,
+        334
+      ],
+      "size": [
+        140,
+        40
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "Internal network \u2014 no published ports",
+      "wraps": [
+        "api",
+        "redis",
+        "worker",
+        "booking",
+        "pgprimary",
+        "pgreplicas",
+        "mq",
+        "consumers",
+        "opensearch",
+        "clickhouse"
+      ]
+    },
+    {
+      "kind": "security-group",
+      "label": "Write path \u2014 lock + transaction",
+      "wraps": [
+        "booking",
+        "pgprimary"
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "client-edge",
+      "from": "clients",
+      "to": "nginx",
+      "label": "HTTPS",
+      "variant": "emphasis"
+    },
+    {
+      "id": "balance",
+      "from": "nginx",
+      "to": "api",
+      "label": "least_conn",
+      "variant": "emphasis"
+    },
+    {
+      "id": "delegate",
+      "from": "api",
+      "to": "booking",
+      "label": "hold / book",
+      "variant": "emphasis"
+    },
+    {
+      "id": "seat-lock",
+      "from": "booking",
+      "to": "redis",
+      "label": "SET NX PX lock",
+      "variant": "emphasis",
+      "fromSide": "top",
+      "toSide": "bottom",
+      "labelAt": [
+        765,
+        138
+      ]
+    },
+    {
+      "id": "commit",
+      "from": "booking",
+      "to": "pgprimary",
+      "label": "FOR UPDATE",
+      "variant": "emphasis"
+    },
+    {
+      "id": "replication",
+      "from": "pgprimary",
+      "to": "pgreplicas",
+      "label": "streaming WAL"
+    },
+    {
+      "id": "reads",
+      "from": "api",
+      "to": "pgreplicas",
+      "label": "browse \u00b7 history",
+      "fromSide": "top",
+      "toSide": "top",
+      "via": [
+        [
+          540,
+          22
+        ],
+        [
+          1230,
+          22
+        ]
+      ]
+    },
+    {
+      "id": "sweep",
+      "from": "worker",
+      "to": "pgprimary",
+      "label": "release expired holds",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelAt": [
+        1000,
+        145
+      ]
+    },
+    {
+      "id": "publish",
+      "from": "booking",
+      "to": "mq",
+      "label": "publish after commit",
+      "variant": "dashed",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelAt": [
+        765,
+        252
+      ]
+    },
+    {
+      "id": "fanout",
+      "from": "mq",
+      "to": "consumers",
+      "label": "fan-out",
+      "variant": "dashed"
+    },
+    {
+      "id": "index",
+      "from": "consumers",
+      "to": "opensearch",
+      "label": "index",
+      "variant": "dashed"
+    },
+    {
+      "id": "ingest",
+      "from": "consumers",
+      "to": "clickhouse",
+      "label": "insert",
+      "variant": "dashed"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Primary booking path",
+      "items": [
+        "Browser \u2192 Nginx \u2192 any of api-1/2/3 \u2192 Booking Service",
+        "Redis lock on event:{id}:seat:{id} admits exactly one caller",
+        "Postgres transaction re-checks AVAILABLE, then commits"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Why no seat is booked twice",
+      "items": [
+        "The Redis lock rejects losing callers before any DB connection opens",
+        "SELECT \u2026 FOR UPDATE is the real guarantee, not the lock",
+        "UNIQUE idempotency_key makes a retried request return the original"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "Failure behavior",
+      "items": [
+        "Any single API instance can die \u2014 Nginx drops it, traffic continues",
+        "Redis down: reads fall through to Postgres; booking fails closed",
+        "RabbitMQ, OpenSearch or ClickHouse down: booking is unaffected"
+      ]
+    },
+    {
+      "dot": "violet",
+      "title": "Not drawn as edges",
+      "items": [
+        "API also uses Redis for cache, rate limits and bloom filters",
+        "Prometheus scrapes /metrics on all 8 services; Grafana reads Prometheus",
+        "X-Request-ID flows from Nginx through every downstream log line"
+      ]
+    }
+  ]
+}
