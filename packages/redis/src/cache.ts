@@ -6,7 +6,6 @@ export const cacheKeys = {
   seatStatus: (eventId: string, seatId: string) => `seat:${eventId}:${seatId}`,
   seatHold: (eventId: string, seatId: string) => `hold:${eventId}:${seatId}`,
   userSession: (userId: string) => `user:${userId}:session`,
-  eventSeatCounter: (eventId: string) => `event:${eventId}:counter`,
 };
 
 export interface CacheResult<T> {
@@ -71,17 +70,4 @@ export async function cacheInvalidatePattern(pattern: string): Promise<void> {
   if (keysToDelete.length > 0) {
     await redis.del(...keysToDelete);
   }
-}
-
-/** Atomic counter for event seat availability, used for fast dashboard reads. */
-export async function decrementAvailability(eventId: string): Promise<number> {
-  return redis.decr(cacheKeys.eventSeatCounter(eventId));
-}
-
-export async function incrementAvailability(eventId: string): Promise<number> {
-  return redis.incr(cacheKeys.eventSeatCounter(eventId));
-}
-
-export async function setAvailabilityCounter(eventId: string, count: number): Promise<void> {
-  await redis.set(cacheKeys.eventSeatCounter(eventId), count);
 }

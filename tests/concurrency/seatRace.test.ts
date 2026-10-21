@@ -1,6 +1,7 @@
 import '../setupIntegrationEnv';
 import axios from 'axios';
 import { randomUUID } from 'crypto';
+import { signAccessToken } from '@ticketing/auth';
 
 // Section 26 / 36: the single most important correctness property of this
 // entire system. N concurrent requests for the SAME seat must yield
@@ -9,24 +10,17 @@ import { randomUUID } from 'crypto';
 const BASE_URL = process.env.API_BASE_URL || 'http://localhost:8080/api';
 const CONCURRENT_USERS = parseInt(process.env.SEAT_RACE_USERS || '100', 10);
 
-async function registerAndLogin(email: string): Promise<string> {
+// Users are registered through the real API, but their tokens are signed
+// here rather than via /auth/login: login is rate limited per client IP
+// (5/min by default) and every simulated user shares this machine's IP, so
+// logging in 100 of them would take 20 minutes. Login itself is covered by
+// tests/integration/bookingWorkflow.test.ts. Requires the same JWT_SECRET
+// as the stack (setupIntegrationEnv defaults to the docker-compose one).
+async function registerUser(email: string): Promise<string> {
   const client = axios.create({ baseURL: BASE_URL, validateStatus: () => true });
-  await client.post('/auth/register', { email, password: 'Password123!', name: 'Racer' });
-
-  // The login rate limiter (5/min/IP by default) is a real feature being
-  // exercised here too, since every simulated "user" logs in from the same
-  // test-runner IP. Retry with backoff rather than raising the limit just
-  // for this test - a real distributed client pool wouldn't share one IP.
-  for (let attempt = 0; attempt < 20; attempt++) {
-    const login = await client.post('/auth/login', { email, password: 'Password123!' });
-    if (login.status === 200) return login.data.data.token;
-    if (login.status === 429) {
-      await new Promise((r) => setTimeout(r, 1000 + Math.random() * 500));
-      continue;
-    }
-    throw new Error(`Unexpected login status ${login.status}: ${JSON.stringify(login.data)}`);
-  }
-  throw new Error(`Login rate-limited for too long for ${email}`);
+  const res = await client.post('/auth/register', { email, password: 'Password123!', name: 'Racer' });
+  if (res.status !== 201) throw new Error(`Unexpected register status ${res.status}: ${JSON.stringify(res.data)}`);
+  return signAccessToken({ sub: res.data.data.id, email, role: 'USER' }).token;
 }
 
 describe(`Concurrent seat hold race (${CONCURRENT_USERS} simultaneous users, one seat)`, () => {
@@ -43,7 +37,7 @@ describe(`Concurrent seat hold race (${CONCURRENT_USERS} simultaneous users, one
 
     const runId = Date.now();
     const tokens = await Promise.all(
-      Array.from({ length: CONCURRENT_USERS }, (_, i) => registerAndLogin(`racer-${runId}-${i}@example.com`))
+      Array.from({ length: CONCURRENT_USERS }, (_, i) => registerUser(`racer-${runId}-${i}@example.com`))
     );
 
     // Fire every request at (as close to) the exact same instant as
@@ -88,7 +82,7 @@ describe(`Concurrent seat hold race (${CONCURRENT_USERS} simultaneous users, one
 
     const runId = Date.now();
     const tokens = await Promise.all(
-      Array.from({ length: CONCURRENT_USERS }, (_, i) => registerAndLogin(`booker-${runId}-${i}@example.com`))
+      Array.from({ length: CONCURRENT_USERS }, (_, i) => registerUser(`booker-${runId}-${i}@example.com`))
     );
 
     // Every request uses its OWN Idempotency-Key here (they are genuinely

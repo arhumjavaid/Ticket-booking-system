@@ -17,7 +17,6 @@ jest.mock('@ticketing/redis', () => ({
     eventAvailability: (id: string) => `event:${id}:availability`,
     seatStatus: (e: string, s: string) => `seat:${e}:${s}`,
   },
-  decrementAvailability: jest.fn(),
   bookingBloomFilter: { add: jest.fn() },
   LockAcquisitionError: class LockAcquisitionError extends Error {},
 }));
@@ -36,7 +35,11 @@ jest.mock('@ticketing/messaging', () => ({
 const { writeDB } = require('@ticketing/database');
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { withLock } = require('@ticketing/redis');
+import * as crypto from 'crypto';
 import { createBooking } from '@ticketing/booking-service/dist/services/bookingService';
+
+const hashOf = (userId: string, eventId: string, seatIds: string[]) =>
+  crypto.createHash('sha256').update(JSON.stringify({ userId, eventId, seatIds })).digest('hex');
 
 describe('Booking idempotency (section 17 / RULE 5)', () => {
   beforeEach(() => {
@@ -44,7 +47,12 @@ describe('Booking idempotency (section 17 / RULE 5)', () => {
   });
 
   it('replays the original booking instead of creating a second one for a repeated Idempotency-Key', async () => {
-    writeDB.idempotencyKey.findUnique.mockResolvedValue({ key: 'key-1', bookingId: 'booking-123' });
+    writeDB.idempotencyKey.findUnique.mockResolvedValue({
+      key: 'key-1',
+      bookingId: 'booking-123',
+      userId: 'user-1',
+      requestHash: hashOf('user-1', 'event-1', ['seat-1']),
+    });
     writeDB.booking.findUniqueOrThrow.mockResolvedValue({
       id: 'booking-123',
       status: 'CONFIRMED',
@@ -88,5 +96,23 @@ describe('Booking idempotency (section 17 / RULE 5)', () => {
     expect(result.idempotent).toBe(false);
     expect(withLock).toHaveBeenCalledTimes(1);
     expect(writeDB.$transaction).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ['another user', { userId: 'user-2', seatIds: ['seat-1'] }],
+    ['different seats', { userId: 'user-1', seatIds: ['seat-2'] }],
+  ])('rejects a reused key from %s instead of returning the stored booking', async (_label, req) => {
+    writeDB.idempotencyKey.findUnique.mockResolvedValue({
+      key: 'key-1',
+      bookingId: 'booking-123',
+      userId: 'user-1',
+      requestHash: hashOf('user-1', 'event-1', ['seat-1']),
+    });
+
+    await expect(createBooking({ eventId: 'event-1', idempotencyKey: 'key-1', ...req })).rejects.toThrow(
+      'Idempotency-Key has already been used for a different request'
+    );
+    expect(writeDB.booking.findUniqueOrThrow).not.toHaveBeenCalled();
+    expect(writeDB.$transaction).not.toHaveBeenCalled();
   });
 });

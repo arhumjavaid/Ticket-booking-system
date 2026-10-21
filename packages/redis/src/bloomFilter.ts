@@ -14,14 +14,21 @@ import { redis } from './client';
  * It CAN return true for an item that was never added (false positive) -
  * that is the accepted tradeoff. Callers must always treat a `true` result
  * as "go check the database", never as confirmation.
+ *
+ * A 0 bit only means "absent" once the filter has been populated from the
+ * database, which `populate()` records with a `:ready` marker. If Redis loses
+ * the data (FLUSHALL, wiped volume) the marker goes with it and the filter
+ * answers "might exist" for everything until the worker repopulates it.
  */
 export class BloomFilter {
   private readonly key: string;
+  private readonly readyKey: string;
   private readonly size: number; // m: number of bits
   private readonly hashCount: number; // k: number of hash functions
 
   constructor(name: string, expectedItems: number, falsePositiveRate = 0.01) {
     this.key = `bloom:${name}`;
+    this.readyKey = `bloom:${name}:ready`;
     this.size = BloomFilter.optimalSize(expectedItems, falsePositiveRate);
     this.hashCount = BloomFilter.optimalHashCount(expectedItems, this.size);
   }
@@ -83,14 +90,16 @@ export class BloomFilter {
   /** true => "may exist, check the DB". false => "definitely does not exist". */
   async mightExist(item: string): Promise<boolean> {
     try {
-      const positions = this.positions(item);
       const pipeline = redis.pipeline();
-      for (const pos of positions) {
+      pipeline.exists(this.readyKey);
+      for (const pos of this.positions(item)) {
         pipeline.getbit(this.key, pos);
       }
       const results = await pipeline.exec();
       if (!results) return true; // fail open toward the DB, never toward false negatives
-      return results.every(([err, bit]) => !err && bit === 1);
+      const [[readyErr, ready], ...bits] = results;
+      if (readyErr || ready !== 1) return true; // not populated yet: a 0 bit proves nothing
+      return bits.every(([err, bit]) => !err && bit === 1);
     } catch {
       // Redis unreachable: fail open. A bloom filter is an optimization -
       // it must NEVER be the reason a real record looks like it doesn't
@@ -99,10 +108,21 @@ export class BloomFilter {
     }
   }
 
-  /** Wipes and rebuilds the filter from an authoritative list (used at service boot). */
-  async rebuild(items: string[]): Promise<void> {
-    await redis.del(this.key);
+  async isReady(): Promise<boolean> {
+    return (await redis.exists(this.readyKey)) === 1;
+  }
+
+  /**
+   * Adds an authoritative list from the database, then marks the filter
+   * trustworthy. Deliberately never clears existing bits: wiping first would
+   * open a window of false negatives and drop items added concurrently (or
+   * missing from a lagging replica's snapshot).
+   * ponytail: bits for deleted items are never cleared, so the false-positive
+   * rate creeps up over time; rebuild into a new key + RENAME if that matters.
+   */
+  async populate(items: string[]): Promise<void> {
     await this.addMany(items);
+    await redis.set(this.readyKey, '1');
   }
 }
 

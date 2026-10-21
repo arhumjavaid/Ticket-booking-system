@@ -1,7 +1,13 @@
 import jwt from 'jsonwebtoken';
 import { randomUUID } from 'crypto';
 
-const JWT_SECRET = process.env.JWT_SECRET || 'dev-super-secret-change-in-production';
+const DEV_JWT_SECRET = 'dev-super-secret-change-in-production';
+const JWT_SECRET = process.env.JWT_SECRET || DEV_JWT_SECRET;
+// Same rule as secretFromEnv in @ticketing/shared, inlined because this
+// package builds before (and doesn't depend on) shared.
+if (process.env.NODE_ENV === 'production' && JWT_SECRET === DEV_JWT_SECRET) {
+  throw new Error('JWT_SECRET must be set to a non-default value when NODE_ENV=production');
+}
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '1h';
 
 export interface JwtPayload {
@@ -9,6 +15,7 @@ export interface JwtPayload {
   email: string;
   role: 'USER' | 'ADMIN';
   jti: string;
+  exp?: number; // set by jsonwebtoken on sign
 }
 
 /**

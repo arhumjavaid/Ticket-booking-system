@@ -69,10 +69,10 @@ Per-component audit against the original "Distributed Event Booking Architecture
 
 ### Worker
 - **Files**: `apps/worker`
-- **Responsibility**: sweeps expired seat holds back to AVAILABLE using Postgres as the source of truth; rebuilds bloom filters on boot
+- **Responsibility**: sweeps expired seat holds back to AVAILABLE using Postgres as the source of truth; populates bloom filters on boot and again whenever Redis loses them
 - **Connections**: Postgres (read+write), Redis (lock + cache invalidation), RabbitMQ (publishes `seat.released`)
 - **Failure behavior**: a crashed worker just delays hold expiry until it (or a replacement) restarts - Postgres already has the correct `expires_at`, nothing is lost
-- **Test coverage**: exercised indirectly by the hold-expiry logic shared with `holdService.ts` (same transaction pattern, unit-tested via `tests/unit/lock.test.ts`'s TTL case)
+- **Test coverage**: `tests/unit/holdLifecycle.test.ts` (sweep releases still-held seats; leaves booked/re-held seats alone), bloom repopulation in `tests/unit/bloomFilter.test.ts`
 
 ### Search Service (OpenSearch)
 - **Files**: `services/search-service`

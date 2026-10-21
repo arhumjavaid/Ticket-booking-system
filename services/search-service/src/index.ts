@@ -3,7 +3,7 @@ import { consume, RoutingKey } from '@ticketing/messaging';
 import { logger } from '@ticketing/logging';
 import { metricsEndpoint } from '@ticketing/metrics';
 import { ensureIndex, pingOpenSearch } from './client';
-import { handleEventCreated, refreshAvailability } from './indexer';
+import { handleEventCreated, refreshAvailability, reindexAll } from './indexer';
 import { searchEvents } from './search';
 
 const PORT = parseInt(process.env.SEARCH_SERVICE_PORT || '4300', 10);
@@ -43,6 +43,9 @@ app.listen(PORT, () => {
 ensureIndex()
   .then(() =>
     Promise.all([
+      reindexAll()
+        .then((count) => logger.info({ operation: 'startup', status: 'reindexed' }, `Reindexed ${count} event(s) from Postgres`))
+        .catch((err) => logger.error({ operation: 'startup', status: 'error' }, `Startup reindex failed: ${(err as Error).message}`)),
       consume('search-service-index', [RoutingKey.EventCreated], handleEventCreated),
       consume('search-service-availability', [RoutingKey.SeatHeld, RoutingKey.SeatReleased, RoutingKey.BookingConfirmed, RoutingKey.BookingCancelled], refreshAvailability),
     ])

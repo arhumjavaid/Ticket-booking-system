@@ -1,5 +1,5 @@
 import { writeDB, Prisma } from '@ticketing/database';
-import { withLock, cacheInvalidate, cacheKeys, redis, decrementAvailability, incrementAvailability, eventSeatBloomFilter, LockAcquisitionError } from '@ticketing/redis';
+import { withLock, cacheInvalidate, cacheKeys, redis, eventSeatBloomFilter, LockAcquisitionError } from '@ticketing/redis';
 import { publishEvent, RoutingKey } from '@ticketing/messaging';
 import { logger } from '@ticketing/logging';
 import { ConflictError, NotFoundError, REDIS_LOCK_TTL_MS, SEAT_HOLD_TTL_SECONDS } from '@ticketing/shared';
@@ -74,6 +74,15 @@ export async function holdSeat({ eventId, seatId, userId }: HoldSeatRequest): Pr
           throw new ConflictError('Seat was modified concurrently, please retry', { eventId, seatId });
         }
 
+        if (isExpiredHold) {
+          // Taking over a lapsed hold the worker hasn't swept yet: close the
+          // previous holder's record now, so only one ACTIVE hold exists.
+          await tx.seatHold.updateMany({
+            where: { eventSeatId: seat.id, status: 'ACTIVE' },
+            data: { status: 'EXPIRED' },
+          });
+        }
+
         await tx.seatHold.create({
           data: {
             eventId,
@@ -96,7 +105,6 @@ export async function holdSeat({ eventId, seatId, userId }: HoldSeatRequest): Pr
           'EX',
           SEAT_HOLD_TTL_SECONDS
         ),
-        decrementAvailability(eventId),
       ]);
 
       await publishEvent(RoutingKey.SeatHeld, { eventId, seatId, userId, expiresAt: result.expiresAt.toISOString() });
@@ -154,7 +162,6 @@ export async function releaseSeatHold({ eventId, seatId, userId }: HoldSeatReque
     await Promise.all([
       cacheInvalidate(cacheKeys.eventAvailability(eventId), cacheKeys.seatStatus(eventId, seatId)),
       redis.del(cacheKeys.seatHold(eventId, seatId)),
-      incrementAvailability(eventId),
     ]);
 
     await publishEvent(RoutingKey.SeatReleased, { eventId, seatId, userId, reason: 'user_released' });

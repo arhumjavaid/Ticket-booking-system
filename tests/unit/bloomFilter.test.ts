@@ -20,7 +20,7 @@ describe('BloomFilter', () => {
 
   it('reports items that were never added as not existing (in the common case)', async () => {
     const filter = new BloomFilter('test-negatives', 1000, 0.01);
-    await filter.add('registered-user@example.com');
+    await filter.populate(['registered-user@example.com']);
 
     // Not a guarantee for every possible string (false positives are
     // allowed), but a filter sized for 1000 items with 1% target FP rate
@@ -34,14 +34,34 @@ describe('BloomFilter', () => {
     expect(falsePositives / trials).toBeLessThan(0.1);
   });
 
-  it('addMany + rebuild replaces the filter contents', async () => {
-    const filter = new BloomFilter('test-rebuild', 1000, 0.01);
-    await filter.add('stale-item');
-    expect(await filter.mightExist('stale-item')).toBe(true);
+  it('answers "might exist" for everything until populated from the database', async () => {
+    const filter = new BloomFilter('test-unpopulated', 1000, 0.01);
+    expect(await filter.mightExist('never-added')).toBe(true);
 
-    await filter.rebuild(['fresh-item-1', 'fresh-item-2']);
+    await filter.populate([]);
+    expect(await filter.mightExist('never-added')).toBe(false);
+  });
 
-    expect(await filter.mightExist('fresh-item-1')).toBe(true);
-    expect(await filter.mightExist('fresh-item-2')).toBe(true);
+  it('fails open again after Redis loses the filter, even if new items were added since', async () => {
+    const filter = new BloomFilter('test-flushed', 1000, 0.01);
+    await filter.populate(['user-from-db']);
+    expect(await filter.mightExist('user-from-db')).toBe(true);
+
+    await redis.flushall();
+    await filter.add('registered-after-flush'); // recreates the bitset, but not the ready marker
+
+    expect(await filter.isReady()).toBe(false);
+    expect(await filter.mightExist('user-from-db')).toBe(true);
+  });
+
+  it('populate keeps items added before or during it', async () => {
+    const filter = new BloomFilter('test-populate', 1000, 0.01);
+    await filter.add('added-live');
+
+    await filter.populate(['from-db-1', 'from-db-2']); // DB snapshot that missed 'added-live'
+
+    for (const item of ['added-live', 'from-db-1', 'from-db-2']) {
+      expect(await filter.mightExist(item)).toBe(true);
+    }
   });
 });

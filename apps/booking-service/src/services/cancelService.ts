@@ -1,5 +1,5 @@
 import { writeDB, Prisma } from '@ticketing/database';
-import { withLock, cacheInvalidate, cacheKeys, incrementAvailability, LockAcquisitionError } from '@ticketing/redis';
+import { withLock, cacheInvalidate, cacheKeys, LockAcquisitionError } from '@ticketing/redis';
 import { publishEvent, RoutingKey } from '@ticketing/messaging';
 import { logger } from '@ticketing/logging';
 import { ConflictError, ForbiddenError, NotFoundError, REDIS_LOCK_TTL_MS } from '@ticketing/shared';
@@ -47,10 +47,7 @@ export async function cancelBooking({ bookingId, userId, isAdmin }: CancelBookin
     throw err;
   }
 
-  await Promise.all([
-    cacheInvalidate(cacheKeys.eventAvailability(booking.eventId), ...seatIds.map((id) => cacheKeys.seatStatus(booking.eventId, id))),
-    ...seatIds.map(() => incrementAvailability(booking.eventId)),
-  ]);
+  await cacheInvalidate(cacheKeys.eventAvailability(booking.eventId), ...seatIds.map((id) => cacheKeys.seatStatus(booking.eventId, id)));
 
   await Promise.all([
     publishEvent(RoutingKey.BookingCancelled, { bookingId: booking.id, userId: booking.userId, eventId: booking.eventId, seatIds }),

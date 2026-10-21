@@ -3,6 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { apiClient, extractErrorMessage } from '../api/client';
 import { EventSummary, SeatView } from '../types';
 import { SeatMap } from '../components/SeatMap';
+import { applySeatStatus, seatChange } from '../seatUpdates';
 import { useAuth } from '../context/AuthContext';
 
 export function EventPage() {
@@ -23,6 +24,10 @@ export function EventPage() {
     setSeats(response.data.data);
   }, [id]);
 
+  const setSeatStatus = useCallback((seatIds: string[], status: SeatView['status']) => {
+    setSeats((prev) => applySeatStatus(prev, seatIds, status));
+  }, []);
+
   useEffect(() => {
     if (!id) return;
     apiClient.get(`/events/${id}`).then((res) => setEvent(res.data.data));
@@ -33,13 +38,32 @@ export function EventPage() {
     // seat/booking events - so a hold/booking made via a DIFFERENT API
     // instance still shows up here within a second or two.
     const baseUrl = (apiClient.defaults.baseURL || '/api').replace(/\/$/, '');
+    // Each update is applied to local state rather than triggering a full
+    // reload. Updates missed while disconnected are recovered by one reload
+    // when the (auto-reconnecting) stream comes back.
     const source = new EventSource(`${baseUrl}/events/${id}/stream`);
-    source.addEventListener('seat-update', () => loadSeats());
-    source.onerror = () => {
-      // Browser EventSource auto-reconnects; nothing to do here.
-    };
+    let connectedBefore = false;
+    source.addEventListener('connected', () => {
+      if (connectedBefore) loadSeats();
+      connectedBefore = true;
+    });
+    source.addEventListener('seat-update', (message) => {
+      const change = seatChange(JSON.parse((message as MessageEvent).data));
+      if (!change) return;
+      setSeatStatus(change.seatIds, change.status);
+      if (change.status === 'AVAILABLE') {
+        // One of our own holds was released (e.g. it expired): it is no
+        // longer ours to book.
+        setSelected((prev) => {
+          if (!change.seatIds.some((seatId) => prev.has(seatId))) return prev;
+          const next = new Set(prev);
+          change.seatIds.forEach((seatId) => next.delete(seatId));
+          return next;
+        });
+      }
+    });
     return () => source.close();
-  }, [id, loadSeats]);
+  }, [id, loadSeats, setSeatStatus]);
 
   async function toggleSeat(seat: SeatView) {
     if (!user) {
@@ -56,11 +80,12 @@ export function EventPage() {
           next.delete(seat.seatId);
           return next;
         });
+        setSeatStatus([seat.seatId], 'AVAILABLE');
       } else {
         await apiClient.post(`/events/${id}/seats/hold`, { seatId: seat.seatId });
         setSelected((prev) => new Set(prev).add(seat.seatId));
+        setSeatStatus([seat.seatId], 'HELD');
       }
-      await loadSeats();
     } catch (err) {
       setError(extractErrorMessage(err));
       await loadSeats();

@@ -1,7 +1,8 @@
 import axios from 'axios';
 import { getContext } from '@ticketing/logging';
+import { secretFromEnv } from '@ticketing/shared';
 
-const INTERNAL_TOKEN = process.env.INTERNAL_SERVICE_TOKEN || 'dev-internal-token-change-in-production';
+const INTERNAL_TOKEN = secretFromEnv('INTERNAL_SERVICE_TOKEN', 'dev-internal-token-change-in-production');
 
 function withRequestId(headers: Record<string, string> = {}) {
   const ctx = getContext();

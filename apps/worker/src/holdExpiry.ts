@@ -1,5 +1,5 @@
 import { writeDB, Prisma } from '@ticketing/database';
-import { withLock, cacheInvalidate, cacheKeys, incrementAvailability } from '@ticketing/redis';
+import { withLock, cacheInvalidate, cacheKeys } from '@ticketing/redis';
 import { publishEvent, RoutingKey } from '@ticketing/messaging';
 import { logger } from '@ticketing/logging';
 import { REDIS_LOCK_TTL_MS } from '@ticketing/shared';
@@ -55,10 +55,7 @@ export async function sweepExpiredHolds(): Promise<number> {
         });
 
         if (released) {
-          await Promise.all([
-            cacheInvalidate(cacheKeys.eventAvailability(hold.event_id), cacheKeys.seatStatus(hold.event_id, hold.seat_id)),
-            incrementAvailability(hold.event_id),
-          ]);
+          await cacheInvalidate(cacheKeys.eventAvailability(hold.event_id), cacheKeys.seatStatus(hold.event_id, hold.seat_id));
           await publishEvent(RoutingKey.SeatReleased, { eventId: hold.event_id, seatId: hold.seat_id, reason: 'hold_expired' });
           releasedCount++;
         }

@@ -1,6 +1,7 @@
 import type { Request, Response, NextFunction } from 'express';
+import { secretFromEnv } from '@ticketing/shared';
 
-const INTERNAL_TOKEN = process.env.INTERNAL_SERVICE_TOKEN || 'dev-internal-token-change-in-production';
+const INTERNAL_TOKEN = secretFromEnv('INTERNAL_SERVICE_TOKEN', 'dev-internal-token-change-in-production');
 
 /**
  * The Booking Service is not exposed publicly (not published through

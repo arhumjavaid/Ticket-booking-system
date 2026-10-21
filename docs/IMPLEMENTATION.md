@@ -160,13 +160,13 @@ and a schema migration applied to the primary showed up on both replicas without
 |---|---|---|
 | Cache-aside reads | `cache.ts` | Falls through to Postgres directly — reads keep working |
 | Distributed lock | `lock.ts` | Throws `LockAcquisitionError` — booking fails closed (correct: can't guarantee mutual exclusion without it) |
-| Bloom filters | `bloomFilter.ts` | Fails open (`mightExist` returns `true`) — never a false negative |
+| Bloom filters | `bloomFilter.ts` | Fails open (`mightExist` returns `true`) on Redis errors or a missing ready marker — never a false negative |
 | Rate limiting | `rateLimiter.ts` | Fails open (`allowed: true`) — availability wins over strict enforcement during an outage |
 | Sessions | via `cacheKeys.userSession` | Logout becomes a no-op; JWT verification is stateless and unaffected |
 
 The lock itself (`tryAcquireLock` / `releaseLock` / `withLock`) is `SET key token NX PX ttl` for acquisition and a Lua script for release that checks the token before deleting — so a process can never release a lock it doesn't currently own, even after its own TTL has already expired and someone else has acquired it.
 
-The bloom filter is a from-scratch bitset implementation (`SETBIT`/`GETBIT` behind a Kirsch–Mitzenmacher double-hash), not a library, specifically so it's backed by Redis rather than process memory — an in-process bloom filter on `api-1` would know nothing about a user registered via `api-2`, which would silently reintroduce the per-instance state the stateless-API requirement forbids. Four independent filters exist (`usernames`, `events`, `bookings`, `event_seats`); `apps/worker` rebuilds all four from Postgres on boot, closing the window where a Redis restart without persistence would otherwise turn "definitely doesn't exist" into a false negative.
+The bloom filter is a from-scratch bitset implementation (`SETBIT`/`GETBIT` behind a Kirsch–Mitzenmacher double-hash), not a library, specifically so it's backed by Redis rather than process memory — an in-process bloom filter on `api-1` would know nothing about a user registered via `api-2`, which would silently reintroduce the per-instance state the stateless-API requirement forbids. Four independent filters exist (`usernames`, `events`, `bookings`, `event_seats`); `apps/worker` populates all four from Postgres on boot and sets a `bloom:{name}:ready` marker. `mightExist` only trusts a 0 bit while that marker exists, so if Redis loses its data the filters fail open (every check goes to the DB) until the worker loop notices the missing marker and repopulates. Population only adds bits, never wipes, so there is no window of false negatives during a rebuild.
 
 ## 7. Messaging Layer
 

@@ -22,9 +22,6 @@ export {
   cacheGet,
   cacheInvalidate,
   cacheInvalidatePattern,
-  decrementAvailability,
-  incrementAvailability,
-  setAvailabilityCounter,
 } from './cache';
 export type { CacheResult } from './cache';
 export { rateLimit } from './rateLimiter';

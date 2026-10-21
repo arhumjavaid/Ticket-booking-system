@@ -107,7 +107,7 @@ flowchart TB
 | Booking Service | The only writer of booking state; owns the lock + transaction + idempotency logic | `apps/booking-service` |
 | RabbitMQ | Topic exchange decoupling booking confirmation from notification/analytics/search | `packages/messaging` |
 | PostgreSQL Cluster | Source of truth; primary for writes, replicas for reads, real streaming replication | `infrastructure/postgres` |
-| Worker | Sweeps expired seat holds back to AVAILABLE; rebuilds bloom filters on boot | `apps/worker` |
+| Worker | Sweeps expired seat holds back to AVAILABLE; populates bloom filters on boot and again whenever Redis loses them | `apps/worker` |
 | OpenSearch | Full text + filtered event search, eventually consistent | `services/search-service` |
 | ClickHouse | OLAP analytics off the booking critical path | `services/analytics-service` |
 | Prometheus/Grafana | Metrics scraping + dashboards | `infrastructure/prometheus`, `infrastructure/grafana` |

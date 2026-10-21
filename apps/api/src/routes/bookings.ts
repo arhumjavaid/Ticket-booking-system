@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { readDB } from '@ticketing/database';
+import { readDB, writeDB } from '@ticketing/database';
 import { authenticate } from '@ticketing/auth';
 import { bookingBloomFilter } from '@ticketing/redis';
 import { asyncHandler, validateBody, ValidationError, ForbiddenError, NotFoundError, RATE_LIMITS } from '@ticketing/shared';
@@ -74,12 +74,11 @@ router.get(
       throw new NotFoundError('Booking');
     }
 
-    const booking = await readDB.run((db) =>
-      db.booking.findUnique({
-        where: { id: req.params.id },
-        include: { items: true, event: true, payment: true },
-      })
-    );
+    const query = { where: { id: req.params.id }, include: { items: true, event: true, payment: true } };
+    // The frontend opens this page right after creating the booking, before
+    // a lagging replica may have it - so a replica miss gets one primary read.
+    const booking =
+      (await readDB.run((db) => db.booking.findUnique(query))) ?? (await writeDB.booking.findUnique(query));
     if (!booking) throw new NotFoundError('Booking');
     if (booking.userId !== req.user!.sub && req.user!.role !== 'ADMIN') {
       throw new ForbiddenError('You do not have access to this booking');

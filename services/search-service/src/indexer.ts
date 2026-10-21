@@ -11,7 +11,25 @@ import { opensearch, INDEX_NAME } from './client';
  * directly - which also makes it naturally idempotent (RULE 11).
  */
 export async function handleEventCreated(event: DomainEvent<{ eventId: string }>): Promise<void> {
-  const eventId = event.data.eventId;
+  await indexEvent(event.data.eventId);
+}
+
+/**
+ * Indexes every event already in Postgres. Run at startup because events
+ * written without an event.created message (seed data, or ones created
+ * while RabbitMQ was down) would otherwise never become searchable.
+ * ponytail: one request per event; switch to the _bulk API if the catalogue
+ * grows past a few thousand events.
+ */
+export async function reindexAll(): Promise<number> {
+  const events = await readDB.run((db) => db.event.findMany({ select: { id: true } }));
+  for (const { id } of events) {
+    await indexEvent(id);
+  }
+  return events.length;
+}
+
+async function indexEvent(eventId: string): Promise<void> {
   const record = await readDB.run((db) => db.event.findUnique({ where: { id: eventId }, include: { venue: true } }));
   if (!record) return;
 
@@ -53,7 +71,7 @@ export async function refreshAvailability(event: DomainEvent<{ eventId?: string 
     });
   } catch (err) {
     // The document may not exist yet if indexing raced with this update -
-    // non-critical, the next event.created / periodic reindex will fix it.
+    // non-critical, the next event.created / startup reindex will fix it.
     logger.warn({ operation: 'search_index', status: 'refresh_skipped', eventId }, (err as Error).message);
   }
 }

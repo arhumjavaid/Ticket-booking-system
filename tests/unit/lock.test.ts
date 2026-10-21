@@ -54,7 +54,7 @@ describe('Distributed lock', () => {
 
   it('acquireLock throws LockAcquisitionError when retries are exhausted', async () => {
     const resource = `seat-contended-${Date.now()}`;
-    await tryAcquireLock(resource, 5000); // held by someone else
+    await tryAcquireLock(resource, 60_000); // held by someone else; long TTL so a slow run cannot outlive it
 
     await expect(acquireLock(resource, 5000, { retries: 1, retryDelayMs: 10 })).rejects.toBeInstanceOf(
       LockAcquisitionError

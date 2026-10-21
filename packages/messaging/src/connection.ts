@@ -5,6 +5,12 @@ export const EXCHANGE = process.env.RABBITMQ_EXCHANGE || 'booking.events';
 
 let connection: amqp.ChannelModel | null = null;
 let connecting: Promise<amqp.ChannelModel> | null = null;
+let closedOnPurpose = false;
+
+/** True once closeConnection() ran, so consumers stop resubscribing. */
+export function isClosedOnPurpose(): boolean {
+  return closedOnPurpose;
+}
 
 /**
  * Lazily connects to RabbitMQ with retry/backoff, and transparently
@@ -56,6 +62,7 @@ export async function createChannel(): Promise<amqp.Channel> {
 }
 
 export async function closeConnection(): Promise<void> {
+  closedOnPurpose = true;
   if (connection) {
     await connection.close();
     connection = null;

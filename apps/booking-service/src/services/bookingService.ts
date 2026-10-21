@@ -1,6 +1,6 @@
 import * as crypto from 'crypto';
 import { writeDB, Prisma } from '@ticketing/database';
-import { withLock, cacheInvalidate, cacheKeys, decrementAvailability, bookingBloomFilter, LockAcquisitionError } from '@ticketing/redis';
+import { withLock, cacheInvalidate, cacheKeys, bookingBloomFilter, LockAcquisitionError } from '@ticketing/redis';
 import { publishEvent, RoutingKey } from '@ticketing/messaging';
 import { logger } from '@ticketing/logging';
 import { ConflictError, REDIS_LOCK_TTL_MS } from '@ticketing/shared';
@@ -39,16 +39,12 @@ export async function createBooking(req: CreateBookingRequest): Promise<BookingR
 
   bookingAttemptsTotal.inc({ event_id: eventId });
 
-  if (idempotencyKey) {
-    const existing = await writeDB.idempotencyKey.findUnique({ where: { key: idempotencyKey } });
-    if (existing && existing.bookingId) {
-      const booking = await loadBookingResult(existing.bookingId);
-      logger.info({ operation: 'createBooking', bookingId: existing.bookingId, status: 'idempotent_replay' }, 'Idempotent replay');
-      return { ...booking, idempotent: true };
-    }
-  }
-
   const requestHash = crypto.createHash('sha256').update(JSON.stringify({ userId, eventId, seatIds })).digest('hex');
+
+  if (idempotencyKey) {
+    const replay = await findReplay(idempotencyKey, userId, requestHash);
+    if (replay) return replay;
+  }
 
   try {
     const locks = seatIds.map((seatId) => lockResource(eventId, seatId));
@@ -140,10 +136,7 @@ export async function createBooking(req: CreateBookingRequest): Promise<BookingR
       });
     });
 
-    await Promise.all([
-      cacheInvalidate(cacheKeys.eventAvailability(eventId), ...seatIds.map((id) => cacheKeys.seatStatus(eventId, id))),
-      ...seatIds.map(() => decrementAvailability(eventId)),
-    ]);
+    await cacheInvalidate(cacheKeys.eventAvailability(eventId), ...seatIds.map((id) => cacheKeys.seatStatus(eventId, id)));
 
     await Promise.all([
       publishEvent(RoutingKey.BookingCreated, { bookingId: result.bookingId, userId, eventId, seatIds }),
@@ -169,11 +162,8 @@ export async function createBooking(req: CreateBookingRequest): Promise<BookingR
     // idempotency_key constraint between our lookup and our insert -
     // that's a success from the caller's point of view, not a failure.
     if (isUniqueConstraintViolation(err, 'idempotency_key') && idempotencyKey) {
-      const existing = await writeDB.idempotencyKey.findUnique({ where: { key: idempotencyKey } });
-      if (existing?.bookingId) {
-        const booking = await loadBookingResult(existing.bookingId);
-        return { ...booking, idempotent: true };
-      }
+      const replay = await findReplay(idempotencyKey, userId, requestHash);
+      if (replay) return replay;
     }
 
     // Losing the race for the Redis lock is an expected outcome under
@@ -187,6 +177,22 @@ export async function createBooking(req: CreateBookingRequest): Promise<BookingR
     bookingFailureTotal.inc({ event_id: eventId, reason: err instanceof ConflictError ? 'conflict' : 'error' });
     throw err;
   }
+}
+
+/**
+ * Keys are a global namespace, so a stored key only replays for the same
+ * user AND the same request. Anything else is a client bug (or someone
+ * probing for other users' bookings) and must not return the stored booking.
+ */
+async function findReplay(idempotencyKey: string, userId: string, requestHash: string): Promise<BookingResult | null> {
+  const existing = await writeDB.idempotencyKey.findUnique({ where: { key: idempotencyKey } });
+  if (!existing?.bookingId) return null;
+  if (existing.userId !== userId || existing.requestHash !== requestHash) {
+    throw new ConflictError('Idempotency-Key has already been used for a different request');
+  }
+  const booking = await loadBookingResult(existing.bookingId);
+  logger.info({ operation: 'createBooking', bookingId: existing.bookingId, status: 'idempotent_replay' }, 'Idempotent replay');
+  return { ...booking, idempotent: true };
 }
 
 async function loadBookingResult(bookingId: string): Promise<Omit<BookingResult, 'idempotent'>> {

@@ -4,7 +4,7 @@ import { pingRedis } from '@ticketing/redis';
 import { logger } from '@ticketing/logging';
 import { metricsEndpoint } from '@ticketing/metrics';
 import { sweepExpiredHolds } from './holdExpiry';
-import { rebuildBloomFilters } from './bloomRebuild';
+import { rebuildBloomFilters, ensureBloomFilters } from './bloomRebuild';
 
 const PORT = parseInt(process.env.WORKER_PORT || '4500', 10);
 const POLL_INTERVAL_MS = parseInt(process.env.WORKER_POLL_INTERVAL_MS || '5000', 10);
@@ -19,6 +19,11 @@ async function loop(): Promise<void> {
       lastSweepAt = Date.now();
     } catch (err) {
       logger.error({ operation: 'workerLoop', status: 'error' }, `Sweep failed: ${(err as Error).message}`);
+    }
+    try {
+      await ensureBloomFilters();
+    } catch (err) {
+      logger.error({ operation: 'workerLoop', status: 'error' }, `Bloom filter check failed: ${(err as Error).message}`);
     }
     await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
   }

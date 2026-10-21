@@ -6,6 +6,7 @@ import { usernameBloomFilter, cacheKeys, redis } from '@ticketing/redis';
 import { attachUserToLogContext, logger } from '@ticketing/logging';
 import { asyncHandler, validateBody, ConflictError, UnauthorizedError, RATE_LIMITS } from '@ticketing/shared';
 import { rateLimitMiddleware } from '../middleware/rateLimitMiddleware';
+import { revokeToken } from '../middleware/tokenRevocation';
 
 export const router = Router();
 
@@ -88,7 +89,7 @@ router.post(
   '/logout',
   authenticate,
   asyncHandler(async (req, res) => {
-    await redis.del(cacheKeys.userSession(req.user!.sub));
+    await Promise.all([redis.del(cacheKeys.userSession(req.user!.sub)), revokeToken(req.user!)]);
     res.status(200).json({ success: true });
   })
 );

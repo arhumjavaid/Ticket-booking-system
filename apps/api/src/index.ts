@@ -16,12 +16,17 @@ import { router as venueRoutes } from './routes/venues';
 import { router as adminRoutes } from './routes/admin';
 import { router as healthRoutes } from './routes/health';
 import { startRealtimeBridge, eventAvailabilityStream } from './realtime';
+import { rejectRevokedTokens } from './middleware/tokenRevocation';
 
 const app = express();
 const PORT = parseInt(process.env.PORT || '3000', 10);
 const INSTANCE_ID = process.env.API_INSTANCE_ID || 'api-unknown';
 
 app.disable('x-powered-by');
+// Requests arrive via Nginx: trust exactly that one hop, so req.ip is the
+// client address Nginx appended to X-Forwarded-For. Without this every
+// client shares Nginx's IP - and therefore one per-IP rate-limit bucket.
+app.set('trust proxy', 1);
 app.use(helmet());
 app.use(cors({ origin: process.env.CORS_ORIGIN || '*', credentials: true }));
 app.use(express.json({ limit: '1mb' }));
@@ -35,6 +40,7 @@ app.use((_req, res, next) => {
 app.use('/', healthRoutes);
 app.get('/metrics', metricsEndpoint());
 
+app.use('/api', rejectRevokedTokens);
 app.use('/api/auth', authRoutes);
 app.use('/api/events', eventRoutes);
 app.use('/api/events', seatRoutes);
