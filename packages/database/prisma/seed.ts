@@ -6,6 +6,12 @@ const prisma = new PrismaClient();
 const ROWS = ['A', 'B', 'C', 'D', 'E'];
 const SEATS_PER_ROW = 10;
 
+// Keep in sync with SEAT_TIER_MULTIPLIERS in @ticketing/shared (not imported to avoid a package cycle).
+const TIER_MULTIPLIERS: Record<string, number> = { VIP: 2, PREMIUM: 1.5, REGULAR: 1 };
+function seatTierPrice(basePrice: number, seatType: string): number {
+  return basePrice * (TIER_MULTIPLIERS[seatType] ?? 1);
+}
+
 async function hashPassword(pw: string) {
   return bcrypt.hash(pw, 10);
 }
@@ -56,8 +62,9 @@ async function main() {
     }
 
     const sectionDefs = [
-      { name: 'Floor', seatType: 'VIP' },
-      { name: 'Upper Bowl', seatType: 'REGULAR' },
+      // Floor: front rows VIP, the rest Premium. Upper Bowl: Regular.
+      { name: 'Floor', seatTypeForRow: (row: string) => (row <= 'B' ? 'VIP' : 'PREMIUM') },
+      { name: 'Upper Bowl', seatTypeForRow: () => 'REGULAR' },
     ];
 
     const sections = [];
@@ -78,7 +85,7 @@ async function main() {
             venueSectionId: section!.id,
             rowLabel: row,
             seatNumber: idx + 1,
-            seatType: sectionDef.seatType,
+            seatType: sectionDef.seatTypeForRow(row),
           }))
         );
         await prisma.seat.createMany({ data: seatRows });
@@ -174,12 +181,11 @@ async function main() {
     if (existingEventSeats === 0) {
       for (const section of sections) {
         const seats = await prisma.seat.findMany({ where: { venueSectionId: section.id } });
-        const priceMultiplier = section.name === 'Floor' ? 1.5 : 1;
         const eventSeatRows = seats.map((seat) => ({
           eventId: event!.id,
           seatId: seat.id,
           status: 'AVAILABLE' as const,
-          price: Number(def.basePrice) * priceMultiplier,
+          price: seatTierPrice(Number(def.basePrice), seat.seatType),
         }));
         await prisma.eventSeat.createMany({ data: eventSeatRows });
       }

@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 400"><defs><pattern id="d" width="16" height="16" patternUnits="userSpaceOnUse"><circle cx="4" cy="4" r="2.2" fill="#111" opacity=".22"/></pattern></defs><rect width="640" height="400" fill="#FFD23F"/><rect width="640" height="400" fill="url(#d)"/>
+<g stroke="#111" stroke-width="8" stroke-linejoin="round"><circle cx="250" cy="210" r="120" fill="#FF9F1C"/><path d="M190 180q20-25 40 0M270 180q20-25 40 0" fill="none" stroke-linecap="round"/><path d="M180 230q70 90 140 0z" fill="#fff"/></g>
+<g stroke="#111" stroke-width="7" stroke-linejoin="round"><path d="M410 70h170a20 20 0 0 1 20 20v80a20 20 0 0 1-20 20h-110l-40 40v-40h-20a20 20 0 0 1-20-20V90a20 20 0 0 1 20-20z" fill="#fff"/></g>
+<text x="495" y="148" text-anchor="middle" font-family="Arial Black,Arial,sans-serif" font-weight="900" font-size="44" fill="#111">HA HA</text>
+<g fill="#FF6B9D" stroke="#111" stroke-width="6"><circle cx="520" cy="300" r="22"/><circle cx="80" cy="80" r="16"/></g>
+</svg>

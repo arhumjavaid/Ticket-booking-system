@@ -1,13 +1,15 @@
 import { FormEvent, useState } from 'react';
-import { useNavigate, Link } from 'react-router-dom';
+import { useNavigate, useLocation, Link } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { extractErrorMessage } from '../api/client';
 
 export function LoginPage() {
   const { login } = useAuth();
   const navigate = useNavigate();
-  const [email, setEmail] = useState('user1@ticketing.dev');
-  const [password, setPassword] = useState('Password123!');
+  const location = useLocation();
+  const from = (location.state as { from?: string } | null)?.from || '/';
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
@@ -17,7 +19,7 @@ export function LoginPage() {
     setSubmitting(true);
     try {
       await login(email, password);
-      navigate('/');
+      navigate(from, { replace: true });
     } catch (err) {
       setError(extractErrorMessage(err));
     } finally {
@@ -26,26 +28,41 @@ export function LoginPage() {
   }
 
   return (
-    <div className="auth-page">
-      <h2>Login</h2>
-      <form onSubmit={onSubmit}>
-        <label>
-          Email
-          <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
-        </label>
-        <label>
-          Password
-          <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} required />
-        </label>
-        {error && <p className="error-text">{error}</p>}
-        <button type="submit" disabled={submitting}>
-          {submitting ? 'Logging in...' : 'Login'}
-        </button>
-      </form>
-      <p>
-        No account? <Link to="/register">Register</Link>
-      </p>
-      <p className="hint">Seed accounts: admin@ticketing.dev / Admin123! · user1..5@ticketing.dev / Password123!</p>
+    <div className="auth-wrap">
+      <div className="auth-page">
+        <h2>Welcome back</h2>
+        <p className="sub">Log in to grab your seats before they're gone.</p>
+        <form onSubmit={onSubmit}>
+          <label>
+            Email
+            <input type="email" autoComplete="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
+          </label>
+          <label>
+            Password
+            <input
+              type="password"
+              autoComplete="current-password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              required
+            />
+          </label>
+          {error && (
+            <p className="alert alert-error" role="alert">
+              {error}
+            </p>
+          )}
+          <button type="submit" disabled={submitting}>
+            {submitting ? 'Logging in…' : 'Log in'}
+          </button>
+        </form>
+        <p className="switch">
+          New to BookMe?{' '}
+          <Link to="/register" state={location.state}>
+            Create an account
+          </Link>
+        </p>
+      </div>
     </div>
   );
 }

@@ -133,9 +133,12 @@ model Event {
   createdById String?     @map("created_by")
   createdAt   DateTime    @default(now()) @map("created_at")
   updatedAt   DateTime    @updatedAt @map("updated_at")
+  // Set when an image is uploaded; null = use the category default image.
+  imageUpdatedAt DateTime? @map("image_updated_at")
 
   venue      Venue       @relation(fields: [venueId], references: [id])
   createdBy  User?       @relation("EventCreatedBy", fields: [createdById], references: [id])
+  image      EventImage?
   eventSeats EventSeat[]
   bookings   Booking[]
   seatHolds  SeatHold[]
@@ -143,6 +146,18 @@ model Event {
   @@index([startsAt])
   @@index([category])
   @@map("events")
+}
+
+// Uploaded event artwork, kept out of the events table so listings stay small.
+model EventImage {
+  eventId     String   @id @map("event_id")
+  contentType String   @map("content_type")
+  data        Bytes
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  event Event @relation(fields: [eventId], references: [id], onDelete: Cascade)
+
+  @@map("event_images")
 }
 
 // event_seats represents inventory of ONE physical seat for ONE event.

@@ -13,6 +13,17 @@ export function errorHandler(err: unknown, req: Request, res: Response, _next: N
     return;
   }
 
+  // body-parser / http-errors (413 too large, 400 malformed body, 415 ...): client errors, not 500s.
+  const httpErr = err as { status?: unknown; expose?: unknown; message?: unknown };
+  if (typeof httpErr.status === 'number' && httpErr.status >= 400 && httpErr.status < 500 && httpErr.expose === true) {
+    res.status(httpErr.status).json({
+      success: false,
+      message: httpErr.status === 413 ? 'Request body is too large' : String(httpErr.message),
+      requestId: (req as { requestId?: string }).requestId,
+    });
+    return;
+  }
+
   // eslint-disable-next-line no-console
   console.error(
     JSON.stringify({

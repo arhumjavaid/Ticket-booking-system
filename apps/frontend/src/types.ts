@@ -23,6 +23,8 @@ export interface EventSummary {
   basePrice: string;
   status: string;
   venue?: Venue;
+  availableSeats?: number;
+  imageUpdatedAt?: string | null;
 }
 
 export type SeatStatus = 'AVAILABLE' | 'HELD' | 'BOOKED' | 'BLOCKED';

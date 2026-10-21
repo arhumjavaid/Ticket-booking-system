@@ -30,7 +30,9 @@ apiClient.interceptors.response.use(
 
 export function extractErrorMessage(err: unknown): string {
   if (axios.isAxiosError(err)) {
-    return err.response?.data?.message || err.message;
+    if (err.code === 'ECONNABORTED') return 'The server is taking too long to respond. Please try again.';
+    if (!err.response) return 'Cannot reach the server. Check your connection and try again.';
+    return err.response.data?.message || err.message;
   }
   return err instanceof Error ? err.message : 'Unknown error';
 }

@@ -12,3 +12,20 @@ export const CACHE_TTL_SECONDS = {
   eventDetail: 60,
   eventAvailability: 15,
 } as const;
+
+// Seat tiers. Event seat price = base price x tier multiplier, unless the
+// admin passes an explicit per-tier price when creating the event.
+export const SEAT_TIER_MULTIPLIERS: Record<string, number> = {
+  VIP: 2,
+  PREMIUM: 1.5,
+  REGULAR: 1,
+};
+
+export type TierPrices = Partial<Record<'VIP' | 'PREMIUM' | 'REGULAR', number>>;
+
+export function seatTierPrice(basePrice: number, seatType: string, tierPrices: TierPrices = {}): number {
+  const tier = seatType.toUpperCase() as keyof TierPrices;
+  const explicit = tierPrices[tier];
+  if (explicit !== undefined) return explicit;
+  return Math.round(basePrice * (SEAT_TIER_MULTIPLIERS[tier] ?? 1) * 100) / 100;
+}
