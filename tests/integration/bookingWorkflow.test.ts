@@ -46,7 +46,9 @@ describe('End-to-end booking workflow (through Nginx)', () => {
     expect(hold.data.data.status).toBe('HELD');
   });
 
-  it('confirms a booking for the held seat', async () => {
+  // Checkout opens a PENDING booking + Stripe PaymentIntent; paying and the
+  // webhook confirmation are covered in stripePayment.test.ts.
+  it('opens a checkout (PENDING booking + Stripe PaymentIntent) for the held seat', async () => {
     const idempotencyKey = randomUUID();
     const response = await client.post(
       '/bookings',
@@ -54,7 +56,8 @@ describe('End-to-end booking workflow (through Nginx)', () => {
       { headers: { 'Idempotency-Key': idempotencyKey } }
     );
     expect(response.status).toBe(201);
-    expect(response.data.data.status).toBe('CONFIRMED');
+    expect(response.data.data.status).toBe('PENDING');
+    expect(response.data.data.payment.clientSecret).toMatch(/^pi_.+_secret_/);
     bookingId = response.data.data.id;
 
     // Replaying the exact same Idempotency-Key must return the SAME
@@ -66,6 +69,7 @@ describe('End-to-end booking workflow (through Nginx)', () => {
     );
     expect(replay.status).toBe(200);
     expect(replay.data.data.id).toBe(bookingId);
+    expect(replay.data.data.payment.clientSecret).toBe(response.data.data.payment.clientSecret); // same PaymentIntent
   });
 
   it('lists the booking in booking history and fetches it by id', async () => {
@@ -77,7 +81,7 @@ describe('End-to-end booking workflow (through Nginx)', () => {
     expect(detail.data.data.id).toBe(bookingId);
   });
 
-  it('cancels the booking and releases the seat back to AVAILABLE', async () => {
+  it('cancels the checkout and releases the seat back to AVAILABLE', async () => {
     const cancel = await client.post(`/bookings/${bookingId}/cancel`);
     expect(cancel.status).toBe(200);
 

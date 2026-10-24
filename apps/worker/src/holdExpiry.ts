@@ -26,6 +26,12 @@ export async function sweepExpiredHolds(): Promise<number> {
     SELECT id, event_id, seat_id, event_seat_id, user_id
     FROM seat_holds
     WHERE status = 'ACTIVE' AND expires_at < NOW()
+      -- Seats in a PENDING checkout are settled with Stripe first
+      -- (expirePendingCheckouts): their payment may still be landing.
+      AND NOT EXISTS (
+        SELECT 1 FROM booking_items bi JOIN bookings b ON b.id = bi.booking_id
+        WHERE bi.event_seat_id = seat_holds.event_seat_id AND b.status = 'PENDING'
+      )
     LIMIT 100
   `);
 

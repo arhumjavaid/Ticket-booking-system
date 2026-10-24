@@ -28,3 +28,8 @@ export const analyticsServiceClient = axios.create({
   baseURL: process.env.ANALYTICS_SERVICE_URL || 'http://analytics-service:4200',
   timeout: 5000,
 });
+
+export const projectionServiceClient = axios.create({
+  baseURL: process.env.PROJECTION_SERVICE_URL || 'http://projection-service:4400',
+  timeout: 5000,
+});

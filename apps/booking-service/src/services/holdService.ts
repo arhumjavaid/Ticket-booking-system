@@ -58,6 +58,13 @@ export async function holdSeat({ eventId, seatId, userId }: HoldSeatRequest): Pr
           throw new ConflictError('Seat is no longer available', { eventId, seatId, status: seat.status });
         }
 
+        if (isExpiredHold && (await inPendingCheckout(tx, seat.id))) {
+          // The lapsed hold belongs to a checkout whose payment may still
+          // land; the worker settles it with Stripe before the seat is freed.
+          seatBookingConflictTotal.inc({ event_id: eventId });
+          throw new ConflictError('Seat is no longer available', { eventId, seatId, status: seat.status });
+        }
+
         const expiresAt = new Date(Date.now() + SEAT_HOLD_TTL_SECONDS * 1000);
 
         // Optimistic check layered on top of the pessimistic row lock:
@@ -135,7 +142,7 @@ export async function holdSeat({ eventId, seatId, userId }: HoldSeatRequest): Pr
 
 export async function releaseSeatHold({ eventId, seatId, userId }: HoldSeatRequest): Promise<void> {
   await withLock(lockResource(eventId, seatId), REDIS_LOCK_TTL_MS, async () => {
-    await writeDB.$transaction(async (tx) => {
+    const released = await writeDB.$transaction(async (tx) => {
       const rows = await tx.$queryRaw<EventSeatRow[]>(Prisma.sql`
         SELECT id, status, held_by, version FROM event_seats
         WHERE event_id = ${eventId} AND seat_id = ${seatId}
@@ -145,7 +152,10 @@ export async function releaseSeatHold({ eventId, seatId, userId }: HoldSeatReque
       if (!seat || seat.status !== 'HELD' || seat.held_by !== userId) {
         // Nothing to release, or held by someone else / already resolved -
         // treat as a no-op rather than an error for idempotent DELETE calls.
-        return;
+        return false;
+      }
+      if (await inPendingCheckout(tx, seat.id)) {
+        throw new ConflictError('Seat is in a pending checkout; cancel the checkout to release it');
       }
 
       await tx.eventSeat.updateMany({
@@ -157,7 +167,11 @@ export async function releaseSeatHold({ eventId, seatId, userId }: HoldSeatReque
         where: { eventSeatId: seat.id, status: 'ACTIVE' },
         data: { status: 'RELEASED' },
       });
+      return true;
     });
+    // A no-op must not announce seat.released: viewers would see a seat
+    // someone else holds or bought flip to AVAILABLE.
+    if (!released) return;
 
     await Promise.all([
       cacheInvalidate(cacheKeys.eventAvailability(eventId), cacheKeys.seatStatus(eventId, seatId)),
@@ -167,4 +181,13 @@ export async function releaseSeatHold({ eventId, seatId, userId }: HoldSeatReque
     await publishEvent(RoutingKey.SeatReleased, { eventId, seatId, userId, reason: 'user_released' });
     logger.info({ operation: 'releaseSeatHold', eventId, seatId }, 'Seat hold released');
   });
+}
+
+async function inPendingCheckout(tx: Prisma.TransactionClient, eventSeatId: string): Promise<boolean> {
+  const rows = await tx.$queryRaw<unknown[]>(Prisma.sql`
+    SELECT 1 FROM booking_items bi JOIN bookings b ON b.id = bi.booking_id
+    WHERE bi.event_seat_id = ${eventSeatId} AND b.status = 'PENDING'
+    LIMIT 1
+  `);
+  return rows.length > 0;
 }

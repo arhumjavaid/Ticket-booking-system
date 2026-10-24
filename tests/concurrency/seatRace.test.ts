@@ -102,6 +102,14 @@ describe(`Concurrent seat hold race (${CONCURRENT_USERS} simultaneous users, one
     const statuses = results.map((r) => (r.status === 'fulfilled' ? r.value.status : -1));
     const successCount = statuses.filter((s) => s === 201).length;
 
+    // Each 201 is a PENDING checkout holding the seat for Stripe payment;
+    // only the webhook can turn it into BOOKED, so one checkout = one booking.
     expect(successCount).toBe(1); // RULE 12: no seat can be booked twice
+    expect(statuses.filter((s) => s === 409).length).toBe(CONCURRENT_USERS - 1);
+
+    // Remaining-seat counts (cached, per tier) reflect the single winner.
+    const availability = (await anon.get(`/events/${eventId}/availability`)).data.data;
+    expect(availability.HELD).toBeGreaterThanOrEqual(1);
+    expect(Object.keys(availability.byTier).length).toBeGreaterThan(0);
   });
 });

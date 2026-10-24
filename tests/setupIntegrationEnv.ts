@@ -11,3 +11,15 @@ process.env.RABBITMQ_URL = process.env.RABBITMQ_URL || 'amqp://ticketing:ticketi
 process.env.RABBITMQ_EXCHANGE = process.env.RABBITMQ_EXCHANGE || 'booking.events';
 process.env.JWT_SECRET = process.env.JWT_SECRET || 'dev-super-secret-change-in-production';
 process.env.API_BASE_URL = process.env.API_BASE_URL || 'http://localhost:8080/api';
+
+// Stripe keys live in the gitignored .env that docker-compose reads; load the
+// same values so tests can drive Stripe test mode and sign webhooks.
+import { existsSync, readFileSync } from 'fs';
+import { resolve } from 'path';
+const envFile = resolve(__dirname, '../.env');
+if (existsSync(envFile)) {
+  for (const line of readFileSync(envFile, 'utf8').split('\n')) {
+    const match = line.match(/^(STRIPE_[A-Z_]+)=(.*)$/);
+    if (match && !process.env[match[1]]) process.env[match[1]] = match[2].trim();
+  }
+}

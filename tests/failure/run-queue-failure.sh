@@ -28,7 +28,7 @@ sleep 2
 status=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE_URL/bookings" \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -H "Idempotency-Key: qf-$(date +%s)" \
   -d "{\"eventId\":\"$EVENT_ID\",\"seatIds\":[\"$SEAT_ID\"]}")
-expect_status "Booking still succeeds with the message queue down" "201" "$status"
+expect_status "Checkout (PENDING booking + Stripe PaymentIntent) still succeeds with the message queue down" "201" "$status"
 
 info "Restarting rabbitmq..."
 docker compose start rabbitmq >/dev/null

@@ -19,7 +19,10 @@ See `docs/` for deep dives; this README gets you running and orients you to the 
 Requires Docker Desktop (with Compose v2) and ~4GB free RAM for the full stack.
 
 ```bash
-cp .env.example .env
+cp -n .env.example .env   # -n: never overwrite an existing .env (it holds your Stripe keys)
+# set STRIPE_SECRET_KEY / STRIPE_PUBLISHABLE_KEY (test mode) and STRIPE_WEBHOOK_SECRET in .env;
+# for local webhooks: stripe listen --forward-to localhost:8080/api/payments/stripe/webhook
+# pay in the UI with test card 4242 4242 4242 4242 - see docs/DISTRIBUTED_SYSTEMS.md#booking--payment-flow-stripe
 docker compose up -d postgres-primary postgres-replica-1 postgres-replica-2 redis rabbitmq opensearch clickhouse
 
 # wait for them to report healthy, then apply migrations + seed data

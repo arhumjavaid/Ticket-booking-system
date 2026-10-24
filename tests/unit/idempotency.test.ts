@@ -1,7 +1,10 @@
+process.env.STRIPE_SECRET_KEY = 'sk_test_unit';
+
 jest.mock('@ticketing/database', () => ({
   writeDB: {
     idempotencyKey: { findUnique: jest.fn() },
     booking: { findUniqueOrThrow: jest.fn() },
+    payment: { update: jest.fn() },
     $transaction: jest.fn(),
   },
   Prisma: {
@@ -25,11 +28,15 @@ jest.mock('@ticketing/messaging', () => ({
   publishEvent: jest.fn().mockResolvedValue(undefined),
   RoutingKey: {
     BookingCreated: 'booking.created',
+    SeatHeld: 'seat.held',
     BookingConfirmed: 'booking.confirmed',
     PaymentCompleted: 'payment.completed',
     NotificationRequested: 'notification.requested',
   },
 }));
+
+const stripeApi = { paymentIntents: { create: jest.fn().mockResolvedValue({ id: 'pi_1', client_secret: 'pi_1_secret_x' }) } };
+jest.mock('stripe', () => jest.fn().mockImplementation(() => stripeApi));
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { writeDB } = require('@ticketing/database');
@@ -70,6 +77,7 @@ describe('Booking idempotency (section 17 / RULE 5)', () => {
 
     expect(result.idempotent).toBe(true);
     expect(result.id).toBe('booking-123');
+    expect(result.payment).toBeNull(); // already settled: nothing left to pay
 
     // The critical assertion: a replay must NOT re-run the seat lock or
     // the booking transaction - otherwise a retried request could race
@@ -81,9 +89,10 @@ describe('Booking idempotency (section 17 / RULE 5)', () => {
   it('proceeds with a normal booking transaction when the key has not been seen before', async () => {
     writeDB.idempotencyKey.findUnique.mockResolvedValue(null);
     writeDB.$transaction.mockResolvedValue({
-      bookingId: 'booking-999',
       totalAmount: 100,
       seats: [{ seatId: 'seat-1', price: '100.00' }],
+      expiresAt: new Date(Date.now() + 300_000),
+      newlyHeld: [],
     });
 
     const result = await createBooking({
@@ -94,8 +103,15 @@ describe('Booking idempotency (section 17 / RULE 5)', () => {
     });
 
     expect(result.idempotent).toBe(false);
+    expect(result.status).toBe('PENDING'); // confirmed only by the Stripe webhook
+    expect(result.payment?.clientSecret).toBe('pi_1_secret_x');
     expect(withLock).toHaveBeenCalledTimes(1);
     expect(writeDB.$transaction).toHaveBeenCalledTimes(1);
+    // Stripe-side idempotency: a retry can never open a second PaymentIntent.
+    expect(stripeApi.paymentIntents.create).toHaveBeenCalledWith(
+      expect.objectContaining({ amount: 10000, currency: 'usd', metadata: expect.objectContaining({ bookingId: result.id }) }),
+      { idempotencyKey: `booking-${result.id}` }
+    );
   });
 
   it.each([

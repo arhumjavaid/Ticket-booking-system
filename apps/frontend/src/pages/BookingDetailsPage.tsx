@@ -55,6 +55,14 @@ export function BookingDetailsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
+  // A PENDING booking settles via Stripe's webhook / the worker; follow it live.
+  useEffect(() => {
+    if (booking?.status !== 'PENDING') return;
+    const timer = setInterval(load, 3000);
+    return () => clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [booking?.status]);
+
   async function cancel() {
     if (!id) return;
     setCancelling(true);
@@ -90,6 +98,7 @@ export function BookingDetailsPage() {
     );
 
   const confirmed = booking.status === 'CONFIRMED';
+  const pending = booking.status === 'PENDING';
   const startsAt = event?.startsAt || booking.event?.startsAt;
 
   return (
@@ -97,7 +106,13 @@ export function BookingDetailsPage() {
       <div className="page-header" style={{ maxWidth: 860, margin: '0 auto 1.5rem' }}>
         <div>
           <p className="eyebrow">{confirmed ? "You're going!" : 'Booking'}</p>
-          <h2>{confirmed ? 'Booking confirmed' : `Booking ${booking.status.toLowerCase()}`}</h2>
+          <h2>{confirmed ? 'Booking confirmed' : pending ? 'Awaiting payment' : `Booking ${booking.status.toLowerCase()}`}</h2>
+          {pending && (
+            <p className="hint">
+              Your seats are held until the payment window closes
+              {booking.expiresAt && ` (${formatTime(booking.expiresAt)})`}; unpaid seats are released automatically.
+            </p>
+          )}
         </div>
         <span className={statusClass(booking.status)}>{booking.status}</span>
       </div>
@@ -166,11 +181,11 @@ export function BookingDetailsPage() {
         </div>
         <div className="ticket-stub">
           <span className={`stamp ${confirmed ? '' : 'stamp-void'}`} aria-hidden="true">
-            {confirmed ? 'Confirmed' : 'Void'}
+            {confirmed ? 'Confirmed' : pending ? 'Pending' : 'Void'}
           </span>
           <QrPattern seed={booking.id} />
           <span className="mono">#{booking.id.slice(0, 8).toUpperCase()}</span>
-          <span className="hint">{confirmed ? 'Show this at the entrance' : 'This ticket is no longer valid'}</span>
+          <span className="hint">{confirmed ? 'Show this at the entrance' : pending ? 'Valid once payment completes' : 'This ticket is no longer valid'}</span>
         </div>
       </article>
 
@@ -183,15 +198,15 @@ export function BookingDetailsPage() {
             View event
           </Link>
         )}
-        {confirmed && !confirmingCancel && (
+        {(confirmed || pending) && !confirmingCancel && (
           <button className="btn-danger" onClick={() => setConfirmingCancel(true)}>
             Cancel booking
           </button>
         )}
-        {confirmed && confirmingCancel && (
+        {(confirmed || pending) && confirmingCancel && (
           <>
             <button className="btn-danger" onClick={cancel} disabled={cancelling}>
-              {cancelling ? 'Cancelling…' : 'Yes, cancel my booking'}
+              {cancelling ? 'Cancelling…' : pending ? 'Yes, release my seats' : 'Yes, cancel and refund'}
             </button>
             <button className="btn-ghost" onClick={() => setConfirmingCancel(false)} disabled={cancelling}>
               Keep it

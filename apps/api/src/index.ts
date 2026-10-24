@@ -1,4 +1,5 @@
 import express from 'express';
+import { stripeWebhookProxy } from './routes/payments';
 import helmet from 'helmet';
 import cors from 'cors';
 import { requestContextMiddleware, logger } from '@ticketing/logging';
@@ -29,6 +30,8 @@ app.disable('x-powered-by');
 app.set('trust proxy', 1);
 app.use(helmet());
 app.use(cors({ origin: process.env.CORS_ORIGIN || '*', credentials: true }));
+// Stripe signs the raw bytes: forward them untouched (before express.json).
+app.post('/api/payments/stripe/webhook', express.raw({ type: '*/*', limit: '1mb' }), stripeWebhookProxy);
 app.use(express.json({ limit: '1mb' }));
 app.use(requestContextMiddleware);
 app.use(metricsMiddleware);

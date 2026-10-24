@@ -33,9 +33,12 @@ router.post(
     }
 
     const passwordHash = await hashPassword(password);
+    // Add to the shared (Redis) filter BEFORE the insert: a failed insert
+    // leaves a harmless false positive, but adding after the commit could
+    // leave a real user the filter calls "absent" - and login trusts that.
+    await usernameBloomFilter.add(email);
     try {
       const user = await writeDB.user.create({ data: { email, passwordHash, name, role: 'USER' } });
-      await usernameBloomFilter.add(email);
       recordAuditLog({ actorId: user.id, action: 'USER_REGISTERED', resourceType: 'user', resourceId: user.id, requestId: req.requestId });
       logger.info({ operation: 'register', status: 'success' }, `User registered: ${user.id}`);
       res.status(201).json({ success: true, data: { id: user.id, email: user.email, name: user.name, role: user.role } });

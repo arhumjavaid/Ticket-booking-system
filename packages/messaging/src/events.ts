@@ -5,6 +5,7 @@ export const RoutingKey = {
   SeatHeld: 'seat.held',
   SeatReleased: 'seat.released',
   PaymentCompleted: 'payment.completed',
+  PaymentFailed: 'payment.failed',
   NotificationRequested: 'notification.requested',
   EventCreated: 'event.created',
 } as const;

@@ -51,6 +51,7 @@ export interface Booking {
   status: string;
   eventId: string;
   totalAmount: string;
+  expiresAt?: string | null;
   createdAt: string;
   items: BookingItem[];
   event?: { id: string; name: string; startsAt: string };

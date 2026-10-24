@@ -44,6 +44,7 @@ enum BookingStatus {
   CONFIRMED
   CANCELLED
   FAILED
+  EXPIRED
 }
 
 enum PaymentStatus {
@@ -209,6 +210,9 @@ model Booking {
   status         BookingStatus @default(PENDING)
   totalAmount    Decimal       @map("total_amount") @db.Decimal(10, 2)
   idempotencyKey String?       @unique @map("idempotency_key")
+  // PENDING bookings only: end of the payment window (the earliest seat hold
+  // expiry). The worker expires the booking + cancels its PaymentIntent after.
+  expiresAt      DateTime?     @map("expires_at")
   createdAt      DateTime      @default(now()) @map("created_at")
   updatedAt      DateTime      @updatedAt @map("updated_at")
 
@@ -219,6 +223,7 @@ model Booking {
 
   @@index([userId])
   @@index([eventId])
+  @@index([status, expiresAt])
   @@map("bookings")
 }
 
@@ -242,8 +247,9 @@ model Payment {
   bookingId      String        @unique @map("booking_id")
   amount         Decimal       @db.Decimal(10, 2)
   status         PaymentStatus @default(PENDING)
-  provider       String        @default("MOCK")
-  transactionRef String        @map("transaction_ref")
+  provider       String        @default("STRIPE")
+  // Stripe PaymentIntent id. Unique so a webhook maps to exactly one payment.
+  transactionRef String?       @unique @map("transaction_ref")
   createdAt      DateTime      @default(now()) @map("created_at")
   updatedAt      DateTime      @updatedAt @map("updated_at")
 
@@ -281,6 +287,16 @@ model AuditLog {
 
   @@index([resourceType, resourceId])
   @@map("audit_logs")
+}
+
+// Stripe webhook event ids already applied. Inserted in the same transaction
+// as the state change it caused, so a redelivered event is a no-op.
+model StripeEvent {
+  id        String   @id
+  type      String
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@map("stripe_events")
 }
 
 // Persists idempotency results so a repeated booking request with the same

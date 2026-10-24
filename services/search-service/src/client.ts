@@ -1,6 +1,11 @@
 import { Client } from '@opensearch-project/opensearch';
 
+import { EMBEDDING_DIMS } from './embedding';
+
 export const INDEX_NAME = process.env.OPENSEARCH_EVENTS_INDEX || 'events';
+// k-NN needs index.knn at creation time, so vectors live in their own index
+// rather than forcing a rebuild of the keyword index above.
+export const VECTOR_INDEX_NAME = `${INDEX_NAME}_vectors`;
 
 export const opensearch = new Client({
   node: process.env.OPENSEARCH_URL || 'http://localhost:9200',
@@ -24,10 +29,27 @@ export const INDEX_MAPPING = {
   },
 } as const;
 
+export const VECTOR_INDEX_MAPPING = {
+  settings: { index: { knn: true } },
+  mappings: {
+    properties: {
+      ...INDEX_MAPPING.mappings.properties,
+      embedding: {
+        type: 'knn_vector',
+        dimension: EMBEDDING_DIMS,
+        method: { name: 'hnsw', space_type: 'cosinesimil', engine: 'lucene' },
+      },
+    },
+  },
+} as const;
+
 export async function ensureIndex(): Promise<void> {
-  const exists = await opensearch.indices.exists({ index: INDEX_NAME });
-  if (!exists.body) {
-    await opensearch.indices.create({ index: INDEX_NAME, body: INDEX_MAPPING as any });
+  for (const [index, body] of [
+    [INDEX_NAME, INDEX_MAPPING],
+    [VECTOR_INDEX_NAME, VECTOR_INDEX_MAPPING],
+  ] as const) {
+    const exists = await opensearch.indices.exists({ index });
+    if (!exists.body) await opensearch.indices.create({ index, body: body as any });
   }
 }
 

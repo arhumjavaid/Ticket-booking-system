@@ -23,7 +23,7 @@ curl -s -X POST "$BASE_URL/events/$EVENT_ID/seats/hold" -H "Authorization: Beare
 status=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE_URL/bookings" \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -H "Idempotency-Key: af-$(date +%s)" \
   -d "{\"eventId\":\"$EVENT_ID\",\"seatIds\":[\"$SEAT_ID\"]}")
-expect_status "Booking still succeeds with ClickHouse/analytics down" "201" "$status"
+expect_status "Checkout (PENDING booking + Stripe PaymentIntent) still succeeds with ClickHouse/analytics down" "201" "$status"
 
 info "Restarting clickhouse..."
 docker compose start clickhouse >/dev/null

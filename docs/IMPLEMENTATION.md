@@ -187,8 +187,13 @@ This is the one service allowed to write booking state, and the only place the b
 Three operations, three files under `apps/booking-service/src/services/`:
 
 - **`holdService.ts`** — `holdSeat()`: bloom-filter fast-reject → lock → transaction (check `AVAILABLE`, flip to `HELD`, set `holdExpiresAt`, create a `SeatHold` row) → cache invalidation → publish `seat.held`. `releaseSeatHold()` is the inverse, idempotent (a no-op if the seat isn't held by the caller anymore).
-- **`bookingService.ts`** — `createBooking()`: idempotency-key fast-path lookup → sort seat IDs (deadlock avoidance for multi-seat bookings — see [`docs/CONCURRENCY.md`](CONCURRENCY.md)) → acquire all seat locks in that fixed order → one transaction locking every seat row, verifying each is `AVAILABLE` or `HELD` by the caller, flipping all to `BOOKED`, creating `Booking` + `BookingItem` rows + a simulated `Payment` → publish four events → return. If two identical requests race past the idempotency-key lookup simultaneously, the DB's `UNIQUE(idempotency_key)` constraint lets exactly one `INSERT` succeed; the loser catches the `P2002` violation and returns the winner's booking instead of erroring.
-- **`cancelService.ts`** — `cancelBooking()`: ownership check → lock the booking's seats in sorted order → transaction flipping them back to `AVAILABLE` and the booking to `CANCELLED` → publish `booking.cancelled` + one `seat.released` per seat.
+- **`bookingService.ts`** — `createBooking()` is **checkout**, not confirmation: idempotency-key fast-path lookup → sort seat IDs (deadlock avoidance, see [`docs/CONCURRENCY.md`](CONCURRENCY.md)) → all seat locks in that order → one transaction locking every seat row, requiring each to be `HELD` by the caller (unexpired) or `AVAILABLE` (held on the spot), rejecting seats already in another `PENDING` checkout → `Booking(PENDING, expires_at = earliest hold expiry)` + `BookingItem`s + `Payment(PENDING, STRIPE)` → Stripe `PaymentIntent` created with idempotency key `booking-{id}` → returns the `clientSecret`. A retried request (same `Idempotency-Key`) returns the same booking *and* the same PaymentIntent. If Stripe is unreachable the checkout is released immediately and the API answers 503.
+- **`paymentService.ts`** — the only code that turns `HELD` into `BOOKED`:
+  - `handleStripeWebhook()` verifies `Stripe-Signature` over the raw body (`STRIPE_WEBHOOK_SECRET`), then dispatches.
+  - `confirmPaymentIntent()` (on `payment_intent.succeeded`) takes the same seat locks, then in one transaction inserts the Stripe event id into `stripe_events` (a redelivery hits the primary key and is a no-op), locks the booking row, and requires it to still be `PENDING` with every seat `HELD` by the buyer and the amount matching. Then seats → `BOOKED` (version-guarded), holds → `CONFIRMED`, booking → `CONFIRMED`, payment → `COMPLETED`, and it publishes `booking.confirmed` + `payment.completed`. If the seats are no longer the buyer's (a late payment after expiry), it refunds through Stripe instead (idempotency key `refund-{pi}`) and marks the booking `FAILED`.
+  - `abandonCheckout()` (expiry, user cancel, `payment_intent.canceled`) cancels the PaymentIntent, then releases the seats (`seat.released` + `payment.failed`). If Stripe says the intent already succeeded, it confirms instead, which covers a missed webhook. If Stripe can't be reached, it keeps the seats until `STRIPE_SETTLE_GRACE_SECONDS` after the window, then releases anyway (a later success gets refunded), so seats can never stay `HELD`.
+  - `syncPayment()` asks Stripe server-to-server for the intent's state right after the browser reports success. It never trusts the browser.
+- **`cancelService.ts`** — `cancelBooking()`: a `PENDING` booking goes through `abandonCheckout()`. A `CONFIRMED` one is refunded through Stripe first (idempotent key), then: ownership check → lock the booking's seats in sorted order → transaction flipping them back to `AVAILABLE` and the booking to `CANCELLED` → publish `booking.cancelled` + one `seat.released` per seat.
 
 A `LockAcquisitionError` from any of the above is caught and re-thrown as a `ConflictError` (HTTP 409) — losing a lock race is an expected outcome under contention, not a server error. (This mapping was missing in the first pass; see [§19](#19-bugs-found-and-fixed-during-validation).)
 
@@ -201,6 +206,8 @@ Routes (`apps/api/src/routes/`): `auth.ts`, `events.ts`, `seats.ts`, `holds.ts`,
 ## 10. Worker
 
 `apps/worker` runs one background loop (`holdExpiry.ts`) polling `seat_holds WHERE status='ACTIVE' AND expires_at < NOW()` every `WORKER_POLL_INTERVAL_MS`, and for each expired hold, takes the same lock-then-transaction path as `holdService.ts` to flip the seat back to `AVAILABLE`. This is deliberately **Postgres-truth-driven, not Redis-TTL-driven** — Redis's `hold:{eventId}:{seatId}` key expiring is just a read-side cache accelerator; if Redis is flushed entirely, this sweep still finds and releases the hold correctly from `event_seats.hold_expires_at`.
+
+Each tick first runs `expirePendingCheckouts()` (from booking-service's `paymentService.ts`): every `PENDING` booking past `expires_at` gets its PaymentIntent cancelled (or confirmed, if Stripe says it was paid) and its seats released. The generic hold sweep skips seats that belong to a `PENDING` checkout, and `holdSeat()` refuses to take over such a lapsed hold, so nobody can grab a seat whose payment may still be landing.
 
 On boot, the worker also calls `bloomRebuild.ts`, re-populating all four Redis bloom filters from Postgres — the fix for the "Redis restarted with no persistence" false-negative window described in [§6](#6-redis-layer).
 
@@ -278,7 +285,18 @@ The search-outage failure test intermittently returned `502` instead of the expe
 
 **Strong consistency** (always the primary, always inside a transaction): seat availability during a hold/booking decision, booking creation/confirmation/cancellation, payment state.
 
-**Eventual consistency** (asynchronous, off the critical path): OpenSearch documents, ClickHouse analytics, notifications, Redis caches (invalidated on write, but a reader mid-TTL can see slightly stale data).
+**Eventual consistency** (asynchronous, off the critical path): OpenSearch documents and vectors, ClickHouse analytics, MongoDB live-activity documents, the Neo4j graph, notifications, Redis caches (invalidated on write, but a reader mid-TTL can see slightly stale data).
+
+Polyglot stores, each fed only by RabbitMQ consumers (see [`docs/DISTRIBUTED_SYSTEMS.md`](DISTRIBUTED_SYSTEMS.md#polyglot-persistence-which-store-for-which-data)):
+
+| Rule | Store | Component | Use case |
+|---|---|---|---|
+| Strong, transactional | PostgreSQL (primary + 2 replicas, optional shards) | booking-service, worker | seats, holds, bookings, payments, Stripe event ids |
+| High-churn, eventual documents | MongoDB | `services/projection-service` (`live.ts`) | per-event live seat-map heat + activity counters (`GET /api/events/:id/live`) |
+| Relationships / visualization | Neo4j | `services/projection-service` (`graph.ts`) | user→booking→event→venue, "also booked" (`/api/events/:id/also-booked`), admin graph (`/api/admin/graph/events/:id`) |
+| Similarity search | OpenSearch k-NN (`events_vectors` index) | `services/search-service` | similar events (`/api/events/:id/similar`); keyword search unchanged |
+| Stats / dashboards | ClickHouse | `services/analytics-service` | revenue, bookings, holds, now also `payment.failed` |
+| O(1) membership | Redis bloom filters | `packages/redis` | email/event/booking/event-seat existence across all api-* nodes |
 
 Redis is never the source of truth for a confirmed booking — every place it accelerates a decision has a documented fallback to Postgres (§6), and the worker's hold-expiry sweep re-derives truth from Postgres, not Redis TTLs (§10). Full detail in [`docs/DISTRIBUTED_SYSTEMS.md`](DISTRIBUTED_SYSTEMS.md).
 
@@ -290,7 +308,7 @@ What's a deliberate local-dev simplification, and what it would take to close th
 
 ```bash
 # First run
-cp .env.example .env
+cp -n .env.example .env   # -n: never overwrite an existing .env
 docker compose up -d postgres-primary postgres-replica-1 postgres-replica-2 redis rabbitmq opensearch clickhouse
 docker compose run --rm migrate
 docker compose up -d --build api-1 api-2 api-3 booking-service worker notification-service analytics-service search-service nginx frontend

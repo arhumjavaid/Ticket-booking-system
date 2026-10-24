@@ -3,6 +3,7 @@ import { useParams, useNavigate, Link } from 'react-router-dom';
 import { apiClient, extractErrorMessage } from '../api/client';
 import { EventSummary, SeatView } from '../types';
 import { SeatMap } from '../components/SeatMap';
+import { StripeCheckout } from '../components/StripeCheckout';
 import { applySeatStatus, seatChange } from '../seatUpdates';
 import { useAuth } from '../context/AuthContext';
 import { TIERS, categoryColor, eventImage, formatDate, formatTime, money, tierKey, tierLabel } from '../ui';
@@ -26,7 +27,19 @@ export function EventPage() {
   const [now, setNow] = useState(Date.now());
   const [error, setError] = useState<string | null>(null);
   const [booking, setBooking] = useState(false);
+  // An open Stripe checkout for the held seats (PENDING booking).
+  const [checkout, setCheckout] = useState<{ bookingId: string; clientSecret: string; publishableKey: string } | null>(null);
+  const [settling, setSettling] = useState(false);
+  const [similar, setSimilar] = useState<{ eventId: string; name: string; category: string }[]>([]);
   const idempotencyKeyRef = useRef<string>(crypto.randomUUID());
+  const summaryRef = useRef<HTMLElement>(null);
+
+  // A new checkout attempt is a new request: give it a fresh key.
+  const endCheckout = useCallback(() => {
+    setCheckout(null);
+    setSettling(false);
+    idempotencyKeyRef.current = crypto.randomUUID();
+  }, []);
 
   const loadSeats = useCallback(async () => {
     if (!id) return;
@@ -59,6 +72,11 @@ export function EventPage() {
       .then((res) => setEvent(res.data.data))
       .catch((err) => setLoadError(extractErrorMessage(err)));
     loadSeats().catch((err) => setError(extractErrorMessage(err)));
+    // Vector (k-NN) similarity; optional, so failures just hide the section.
+    apiClient
+      .get(`/events/${id}/similar`)
+      .then((res) => setSimilar(res.data.data))
+      .catch(() => setSimilar([]));
 
     // Real-time availability (section 35): Server-Sent Events pushed from
     // the API instance that received this connection, fed by RabbitMQ
@@ -102,11 +120,17 @@ export function EventPage() {
     const expired = Array.from(selected).filter((seatId) => (holdExpiry.get(seatId) ?? Infinity) <= now);
     if (expired.length === 0) return;
     dropSelection(expired);
-    setError('Your seat hold expired. Please pick your seats again.');
+    if (checkout && !settling) {
+      endCheckout();
+      setError('Your payment window closed, so the seats were released. Pick seats again to retry.');
+    } else if (!checkout) {
+      setError('Your seat hold expired. Please pick your seats again.');
+    }
     loadSeats();
-  }, [secondsLeft, selected, holdExpiry, now, dropSelection, loadSeats]);
+  }, [secondsLeft, selected, holdExpiry, now, dropSelection, loadSeats, checkout, settling, endCheckout]);
 
   async function toggleSeat(seat: SeatView) {
+    if (checkout) return; // seats are locked into the open checkout
     if (!user) {
       navigate('/login', { state: { from: `/events/${id}` } });
       return;
@@ -136,7 +160,7 @@ export function EventPage() {
     }
   }
 
-  async function confirmBooking() {
+  async function startCheckout() {
     if (selected.size === 0) return;
     setBooking(true);
     setError(null);
@@ -146,7 +170,59 @@ export function EventPage() {
         { eventId: id, seatIds: Array.from(selected) },
         { headers: { 'Idempotency-Key': idempotencyKeyRef.current } }
       );
-      navigate(`/bookings/${response.data.data.id}`);
+      const created = response.data.data;
+      if (created.status === 'CONFIRMED') {
+        navigate(`/bookings/${created.id}`);
+      } else if (created.status === 'PENDING' && created.payment) {
+        setCheckout({ bookingId: created.id, clientSecret: created.payment.clientSecret, publishableKey: created.payment.publishableKey });
+        summaryRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      } else {
+        setError(`This checkout is ${String(created.status).toLowerCase()}. Please pick your seats again.`);
+        endCheckout();
+      }
+    } catch (err) {
+      setError(extractErrorMessage(err));
+    } finally {
+      setBooking(false);
+    }
+  }
+
+  // Stripe accepted the payment; the server confirms it from Stripe's own
+  // record (webhook, or the sync call below), so wait for CONFIRMED.
+  async function onPaid() {
+    if (!checkout) return;
+    setSettling(true);
+    const bookingId = checkout.bookingId;
+    for (let attempt = 0; attempt < 30; attempt++) {
+      try {
+        const res = await apiClient.post(`/bookings/${bookingId}/payment/sync`);
+        const status = res.data.data.status;
+        if (status === 'CONFIRMED') {
+          navigate(`/bookings/${bookingId}`);
+          return;
+        }
+        if (status !== 'PENDING') {
+          endCheckout();
+          setError('Your payment arrived after the seats were released, so it has been refunded.');
+          return;
+        }
+      } catch {
+        // transient; keep polling
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
+    navigate(`/bookings/${bookingId}`); // still settling: the booking page shows its live status
+  }
+
+  async function cancelCheckout() {
+    if (!checkout) return;
+    setBooking(true);
+    try {
+      await apiClient.post(`/bookings/${checkout.bookingId}/cancel`);
+      const seatIds = Array.from(selected);
+      endCheckout();
+      dropSelection(seatIds);
+      setSeatStatus(seatIds, 'AVAILABLE');
     } catch (err) {
       setError(extractErrorMessage(err));
     } finally {
@@ -193,9 +269,22 @@ export function EventPage() {
     secondsLeft === null ? null : `${Math.floor(secondsLeft / 60)}:${String(secondsLeft % 60).padStart(2, '0')}`;
   const isPast = new Date(event.startsAt).getTime() < Date.now();
 
-  const confirmButton = (
-    <button className="btn-block" onClick={confirmBooking} disabled={booking || selected.size === 0}>
-      {booking ? 'Booking…' : selected.size ? `Book ${selected.size} seat${selected.size > 1 ? 's' : ''} · ${money(total)}` : 'Select seats'}
+  const confirmButton = checkout ? (
+    <>
+      <StripeCheckout
+        clientSecret={checkout.clientSecret}
+        publishableKey={checkout.publishableKey}
+        payLabel={settling ? 'Confirming your tickets…' : `Pay ${money(total)}`}
+        disabled={settling || secondsLeft === 0}
+        onPaid={onPaid}
+      />
+      <button className="btn-ghost btn-sm" onClick={cancelCheckout} disabled={booking || settling}>
+        Cancel and release seats
+      </button>
+    </>
+  ) : (
+    <button className="btn-block" onClick={startCheckout} disabled={booking || selected.size === 0}>
+      {booking ? 'Reserving…' : selected.size ? `Continue to payment · ${money(total)}` : 'Select seats'}
     </button>
   );
 
@@ -269,7 +358,7 @@ export function EventPage() {
           />
         </div>
 
-        <aside className="summary card" aria-label="Your selection">
+        <aside className="summary card" aria-label="Your selection" ref={summaryRef}>
           <h3>Your tickets</h3>
           {!user && (
             <p className="hint">
@@ -282,7 +371,7 @@ export function EventPage() {
           {user && selected.size === 0 && <p className="hint">Tap any available seat on the map to hold it for checkout.</p>}
           {timerText && (
             <div className={`timer ${secondsLeft! <= 60 ? 'urgent' : ''}`} role="timer" aria-live="off">
-              Seats held for <strong>{timerText}</strong>
+              {checkout ? 'Pay within' : 'Seats held for'} <strong>{timerText}</strong>
             </div>
           )}
           {selectedSeats.length > 0 && (
@@ -303,7 +392,7 @@ export function EventPage() {
                     <button
                       className="remove"
                       aria-label={`Remove ${s.section} ${s.row}${s.number}`}
-                      disabled={pendingSeatId === s.seatId}
+                      disabled={pendingSeatId === s.seatId || checkout !== null}
                       onClick={() => toggleSeat(s)}
                     >
                       ×
@@ -324,6 +413,19 @@ export function EventPage() {
         </aside>
       </div>
 
+      {similar.length > 0 && (
+        <section className="similar">
+          <h3>You might also like</h3>
+          <div className="info-pills">
+            {similar.map((e) => (
+              <Link key={e.eventId} to={`/events/${e.eventId}`} className="info-pill">
+                {e.name} · {e.category}
+              </Link>
+            ))}
+          </div>
+        </section>
+      )}
+
       {selected.size > 0 && (
         <div className="mobile-bar">
           <div>
@@ -333,8 +435,11 @@ export function EventPage() {
               {timerText && ` · ${timerText} left`}
             </div>
           </div>
-          <button onClick={confirmBooking} disabled={booking}>
-            {booking ? 'Booking…' : 'Book now'}
+          <button
+            onClick={checkout ? () => summaryRef.current?.scrollIntoView({ behavior: 'smooth' }) : startCheckout}
+            disabled={booking}
+          >
+            {checkout ? 'Pay now' : booking ? 'Reserving…' : 'Checkout'}
           </button>
         </div>
       )}

@@ -1,3 +1,4 @@
+import * as crypto from 'crypto';
 import express, { Router } from 'express';
 import { z } from 'zod';
 import { writeDB, readDB, recordAuditLog } from '@ticketing/database';
@@ -104,9 +105,16 @@ router.post(
     const venue = await writeDB.venue.findUnique({ where: { id: body.venueId }, include: { sections: { include: { seats: true } } } });
     if (!venue) throw new NotFoundError('Venue');
 
+    // Bloom filters learn the ids before the rows exist (see auth register):
+    // never a committed event/seat that a filter calls "absent".
+    const eventId = crypto.randomUUID();
+    await eventBloomFilter.add(eventId);
+    await eventSeatBloomFilter.addMany(venue.sections.flatMap((section) => section.seats.map((seat) => `${eventId}:${seat.id}`)));
+
     const event = await writeDB.$transaction(async (tx) => {
       const created = await tx.event.create({
         data: {
+          id: eventId,
           venueId: body.venueId,
           name: body.name,
           description: body.description,
@@ -135,10 +143,6 @@ router.post(
       return created;
     });
 
-    await eventBloomFilter.add(event.id);
-    await eventSeatBloomFilter.addMany(
-      venue.sections.flatMap((section) => section.seats.map((seat) => `${event.id}:${seat.id}`))
-    );
     recordAuditLog({ actorId: req.user!.sub, action: 'EVENT_CREATED', resourceType: 'event', resourceId: event.id, requestId: req.requestId });
     await publishEvent(RoutingKey.EventCreated, { eventId: event.id, name: event.name, category: event.category }, req.requestId);
 

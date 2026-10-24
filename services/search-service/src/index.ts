@@ -4,7 +4,7 @@ import { logger } from '@ticketing/logging';
 import { metricsEndpoint } from '@ticketing/metrics';
 import { ensureIndex, pingOpenSearch } from './client';
 import { handleEventCreated, refreshAvailability, reindexAll } from './indexer';
-import { searchEvents } from './search';
+import { searchEvents, similarEvents } from './search';
 
 const PORT = parseInt(process.env.SEARCH_SERVICE_PORT || '4300', 10);
 
@@ -33,6 +33,20 @@ app.get('/search/events', async (req, res) => {
   } catch (err) {
     logger.error({ operation: 'search', status: 'error' }, (err as Error).message);
     res.status(503).json({ success: false, message: 'Search is temporarily unavailable' });
+  }
+});
+
+app.get('/search/events/:id/similar', async (req, res) => {
+  try {
+    const results = await similarEvents(req.params.id);
+    if (!results) {
+      res.status(404).json({ success: false, message: 'Event not indexed yet' });
+      return;
+    }
+    res.status(200).json({ success: true, data: results });
+  } catch (err) {
+    logger.error({ operation: 'similar', status: 'error' }, (err as Error).message);
+    res.status(503).json({ success: false, message: 'Similar events are temporarily unavailable' });
   }
 });
 

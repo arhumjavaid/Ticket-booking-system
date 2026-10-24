@@ -28,8 +28,11 @@ Every response follows `{ success: boolean, data?, message?, code?, pagination? 
 | Method | Path | Notes |
 |---|---|---|
 | GET | `/events/:eventId/seats` | Full seat map with per-seat status |
-| GET | `/events/:eventId/availability` | Cached counts by status |
+| GET | `/events/:eventId/availability` | Cached counts by status, plus `byTier` (VIP/PREMIUM/REGULAR × status) |
 | GET | `/events/:eventId/stream` | Server-Sent Events - `seat-update` events pushed on any seat/booking change for this event |
+| GET | `/events/:eventId/similar` | Similar events (OpenSearch k-NN over event embeddings) |
+| GET | `/events/:eventId/live` | Live activity: seat heat + counters (MongoDB projection, eventual) |
+| GET | `/events/:eventId/also-booked` | "People who booked this also booked" (Neo4j, eventual) |
 
 ## Holds
 
@@ -44,10 +47,12 @@ Rate limited 20/min/user. Proxied to the Booking Service, which owns the distrib
 
 | Method | Path | Auth | Notes |
 |---|---|---|---|
-| POST | `/bookings` | Bearer + `Idempotency-Key` header (required) | `{eventId, seatIds[]}` -> 201 (new) or 200 (idempotent replay) |
+| POST | `/bookings` | Bearer + `Idempotency-Key` header (required) | `{eventId, seatIds[]}` -> 201 (new) or 200 (idempotent replay). Opens a checkout: `{id, status: 'PENDING', expiresAt, payment: {provider: 'STRIPE', clientSecret, publishableKey}}`. Seats must be held by the caller or AVAILABLE |
+| POST | `/bookings/:id/payment/sync` | Bearer (owner) | Re-reads the PaymentIntent from Stripe and confirms if it succeeded; returns `{id, status}` |
+| POST | `/payments/stripe/webhook` | Stripe-Signature | Stripe → us. Handles `payment_intent.succeeded`, `.canceled`, `.payment_failed`; 400 on a bad signature |
 | GET | `/bookings?all=true` | Bearer | `all=true` requires ADMIN, otherwise scoped to the caller |
 | GET | `/bookings/:id` | Bearer | Owner or admin only |
-| POST | `/bookings/:id/cancel` | Bearer | Releases seats back to AVAILABLE |
+| POST | `/bookings/:id/cancel` | Bearer | PENDING: cancels the PaymentIntent and releases seats. CONFIRMED: Stripe refund, then releases seats |
 
 ## Search
 
@@ -67,6 +72,7 @@ Rate limited 20/min/user. Proxied to the Booking Service, which owns the distrib
 | Method | Path |
 |---|---|
 | GET | `/admin/users?page=&pageSize=` |
+| GET | `/admin/graph/events/:eventId` (Neo4j nodes + links) |
 | GET/POST | `/venues` (POST is admin-only; creates a venue + sections + seats in one call) |
 
 ## Health / Ops

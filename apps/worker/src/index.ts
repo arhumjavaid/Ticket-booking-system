@@ -3,6 +3,7 @@ import { writeDB } from '@ticketing/database';
 import { pingRedis } from '@ticketing/redis';
 import { logger } from '@ticketing/logging';
 import { metricsEndpoint } from '@ticketing/metrics';
+import { expirePendingCheckouts } from '@ticketing/booking-service/dist/services/paymentService';
 import { sweepExpiredHolds } from './holdExpiry';
 import { rebuildBloomFilters, ensureBloomFilters } from './bloomRebuild';
 
@@ -15,6 +16,9 @@ let running = true;
 async function loop(): Promise<void> {
   while (running) {
     try {
+      // Checkouts first: each one cancels its PaymentIntent (or confirms it,
+      // if Stripe says it was paid) before its seats are released.
+      await expirePendingCheckouts();
       await sweepExpiredHolds();
       lastSweepAt = Date.now();
     } catch (err) {

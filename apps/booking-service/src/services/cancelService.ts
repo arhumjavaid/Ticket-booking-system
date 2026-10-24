@@ -4,24 +4,42 @@ import { publishEvent, RoutingKey } from '@ticketing/messaging';
 import { logger } from '@ticketing/logging';
 import { ConflictError, ForbiddenError, NotFoundError, REDIS_LOCK_TTL_MS } from '@ticketing/shared';
 import { CancelBookingRequest } from '../types';
+import { getStripe } from '../stripe';
+import { abandonCheckout } from './paymentService';
 
 function lockResource(eventId: string, seatId: string): string {
   return `event:${eventId}:seat:${seatId}`;
 }
 
 export async function cancelBooking({ bookingId, userId, isAdmin }: CancelBookingRequest) {
-  const booking = await writeDB.booking.findUnique({ where: { id: bookingId }, include: { items: true } });
+  const booking = await writeDB.booking.findUnique({ where: { id: bookingId }, include: { items: true, payment: true } });
   if (!booking) throw new NotFoundError('Booking');
   if (!isAdmin && booking.userId !== userId) throw new ForbiddenError('You do not own this booking');
 
   if (booking.status === 'CANCELLED') {
     return { id: booking.id, status: booking.status, alreadyCancelled: true };
   }
+  if (booking.status === 'PENDING') {
+    // Abandoning checkout: cancel the PaymentIntent, release the seats.
+    const outcome = await abandonCheckout(bookingId, 'CANCELLED', 'checkout_cancelled');
+    if (outcome === 'confirmed') throw new ConflictError('Payment already succeeded; the booking is confirmed');
+    if (outcome === 'pending') throw new ConflictError('Payment is still being processed, please try again shortly');
+    return { id: booking.id, status: 'CANCELLED', alreadyCancelled: outcome === 'noop' };
+  }
   if (booking.status !== 'CONFIRMED') {
     throw new ConflictError(`Booking cannot be cancelled from status ${booking.status}`);
   }
 
   const seatIds = booking.items.map((item) => item.seatId).sort();
+
+  // Refund first, keyed so a retried cancel can't refund twice. If the
+  // cancel transaction below then fails, the retry finds the refund done.
+  if (booking.payment?.provider === 'STRIPE' && booking.payment.transactionRef) {
+    await getStripe().refunds.create(
+      { payment_intent: booking.payment.transactionRef },
+      { idempotencyKey: `refund-${booking.payment.transactionRef}` }
+    );
+  }
 
   try {
     await withNestedLocks(seatIds.map((seatId) => lockResource(booking.eventId, seatId)), async () => {

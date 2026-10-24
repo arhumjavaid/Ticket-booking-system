@@ -39,6 +39,12 @@ scrape_configs:
         labels:
           layer: 'services'
 
+  - job_name: 'projection-service'
+    static_configs:
+      - targets: ['projection-service:4400']
+        labels:
+          layer: 'services'
+
   - job_name: 'prometheus'
     static_configs:
       - targets: ['localhost:9090']

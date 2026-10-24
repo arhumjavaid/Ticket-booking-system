@@ -1,4 +1,4 @@
-import { opensearch, INDEX_NAME } from './client';
+import { opensearch, INDEX_NAME, VECTOR_INDEX_NAME } from './client';
 
 export interface SearchParams {
   q?: string;
@@ -62,4 +62,25 @@ export async function searchEvents(params: SearchParams) {
     results: hits.map((h) => ({ ...(h._source as object), score: h._score })),
     pagination: { page, pageSize, total },
   };
+}
+
+/** k-NN over the event embeddings: the events closest to this one. */
+export async function similarEvents(eventId: string, size = 5) {
+  const source = await opensearch.get({ index: VECTOR_INDEX_NAME, id: eventId }, { ignore: [404] });
+  if (!source.body.found) return null;
+
+  const response = await opensearch.search({
+    index: VECTOR_INDEX_NAME,
+    body: {
+      // Over-fetch: the source event itself and unpublished events are dropped below.
+      size: size + 5,
+      query: { knn: { embedding: { vector: source.body._source.embedding, k: size + 5 } } },
+      _source: { excludes: ['embedding'] },
+    },
+  });
+  const hits = response.body.hits.hits as { _id: string; _source: { status: string }; _score: number }[];
+  return hits
+    .filter((h) => h._id !== eventId && h._source.status === 'PUBLISHED')
+    .slice(0, size)
+    .map((h) => ({ ...h._source, score: h._score }));
 }

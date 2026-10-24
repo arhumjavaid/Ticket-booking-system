@@ -51,6 +51,7 @@ consume(
     RoutingKey.SeatHeld,
     RoutingKey.SeatReleased,
     RoutingKey.PaymentCompleted,
+    RoutingKey.PaymentFailed,
   ],
   handleAnalyticsEvent
 ).catch((err) => {

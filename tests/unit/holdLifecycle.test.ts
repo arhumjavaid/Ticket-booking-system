@@ -77,12 +77,23 @@ describe('Taking over a lapsed hold (booking service)', () => {
   });
 
   it("closes the previous holder's ACTIVE record before creating the new one", async () => {
-    tx.$queryRaw.mockResolvedValue([seatRow({ status: 'HELD', held_by: 'user-1', hold_expires_at: new Date(Date.now() - 1000) })]);
+    tx.$queryRaw
+      .mockResolvedValueOnce([seatRow({ status: 'HELD', held_by: 'user-1', hold_expires_at: new Date(Date.now() - 1000) })])
+      .mockResolvedValueOnce([]); // not part of a pending checkout
 
     await holdSeat({ eventId: 'event-1', seatId: 'seat-1', userId: 'user-2' });
 
     expect(tx.seatHold.updateMany).toHaveBeenCalledWith({ where: { eventSeatId: 'es-1', status: 'ACTIVE' }, data: { status: 'EXPIRED' } });
     expect(tx.seatHold.updateMany.mock.invocationCallOrder[0]).toBeLessThan(tx.seatHold.create.mock.invocationCallOrder[0]);
+  });
+
+  it('refuses to take over a lapsed hold whose checkout payment may still land', async () => {
+    tx.$queryRaw
+      .mockResolvedValueOnce([seatRow({ status: 'HELD', held_by: 'user-1', hold_expires_at: new Date(Date.now() - 1000) })])
+      .mockResolvedValueOnce([{ '?column?': 1 }]);
+
+    await expect(holdSeat({ eventId: 'event-1', seatId: 'seat-1', userId: 'user-2' })).rejects.toThrow('Seat is no longer available');
+    expect(tx.eventSeat.updateMany).not.toHaveBeenCalled();
   });
 
   it('does not touch hold records when the seat was simply AVAILABLE', async () => {

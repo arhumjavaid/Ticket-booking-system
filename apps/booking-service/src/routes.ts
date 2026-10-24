@@ -4,6 +4,7 @@ import { validateBody, asyncHandler } from '@ticketing/shared';
 import { holdSeat, releaseSeatHold } from './services/holdService';
 import { createBooking } from './services/bookingService';
 import { cancelBooking } from './services/cancelService';
+import { handleStripeWebhook, syncPayment } from './services/paymentService';
 
 export const router = Router();
 
@@ -53,3 +54,18 @@ router.post(
     res.status(200).json({ success: true, data: result });
   })
 );
+
+const syncSchema = z.object({ userId: z.string().uuid() });
+
+router.post(
+  '/internal/bookings/:id/payment/sync',
+  validateBody(syncSchema),
+  asyncHandler(async (req, res) => {
+    res.status(200).json({ success: true, data: await syncPayment(req.params.id, req.body.userId) });
+  })
+);
+
+export const stripeWebhook = asyncHandler(async (req, res) => {
+  const result = await handleStripeWebhook(req.body as Buffer, req.headers['stripe-signature'] as string | undefined);
+  res.status(200).json({ received: true, ...result });
+});

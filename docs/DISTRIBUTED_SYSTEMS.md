@@ -12,6 +12,58 @@ Three independent layers, each closing a gap the previous one leaves open:
 
 Verified by `tests/concurrency/seatRace.test.ts`, which fires N (default 100) simultaneous hold/booking requests for the same seat through Nginx and asserts exactly one 201 and the rest 409.
 
+## Booking + payment flow (Stripe)
+
+One model, end to end: **hold → PENDING booking + Stripe PaymentIntent → verified webhook confirms.**
+
+```
+select seat ──► POST /events/:id/seats/hold        seat AVAILABLE → HELD (hold_expires_at = now + SEAT_HOLD_TTL_SECONDS)
+checkout    ──► POST /bookings (Idempotency-Key)    booking PENDING, expires_at = earliest hold expiry
+                                                    payment PENDING/STRIPE, PaymentIntent created (Stripe key booking-{id})
+pay         ──► Stripe Payment Element (browser → Stripe directly)
+confirm     ◄── POST /payments/stripe/webhook       signature verified → HELD → BOOKED, booking CONFIRMED, payment COMPLETED
+                                                    publishes booking.confirmed + payment.completed
+expire      ◄── worker, every WORKER_POLL_INTERVAL_MS
+                                                    PaymentIntent cancelled → seats AVAILABLE, booking EXPIRED
+                                                    publishes seat.released + payment.failed
+```
+
+PaymentIntent was chosen over Checkout Session because a Checkout Session's `expires_at` must be at least 30 minutes out, longer than the 5-minute hold, while a PaymentIntent can be cancelled the moment the hold lapses.
+
+Guarantees:
+
+- **No simulated success.** `HELD → BOOKED` happens only in `paymentService.confirmPaymentIntent()`, reached from a signature-verified webhook or from Stripe's own API (`paymentIntents.retrieve` with the secret key, used by the worker and by `POST /bookings/:id/payment/sync`). The browser's "payment succeeded" is never trusted.
+- **Same triple layer as holds.** Confirm and release take the sorted Redis seat locks (fail fast; a lost lock returns 5xx and Stripe retries), then `SELECT ... FOR UPDATE` on the booking row and every seat row, then version-guarded updates.
+- **Webhook idempotency.** The Stripe event id is inserted into `stripe_events` inside the confirming transaction, so a redelivery hits the primary key and changes nothing. The booking must still be `PENDING`, so a second, different event for the same intent is also a no-op. Refunds use idempotency key `refund-{pi}`.
+- **Late payment.** If the window expired and the seats were released (or re-sold) before the money arrived, the webhook refunds instead of booking. A seat is never sold twice.
+- **Never stuck HELD.** The worker settles `PENDING` bookings past `expires_at` from Postgres, not Redis. It cancels the PaymentIntent, or confirms it if Stripe says it was paid (a missed webhook). If Stripe is unreachable it waits at most `STRIPE_SETTLE_GRACE_SECONDS` after the window, then releases anyway; a later success is refunded. The generic hold sweep and `holdSeat()` takeover both skip seats in a `PENDING` checkout, so nobody can grab a seat whose payment may still be landing.
+- **Declined card ≠ release.** `payment_intent.payment_failed` keeps the checkout open: the Payment Element retries on the same intent while the hold lasts. `payment_intent.canceled`, the user's cancel, or expiry release the seats.
+
+Local webhooks: `stripe listen --forward-to localhost:8080/api/payments/stripe/webhook`, then put the printed `whsec_...` in `.env` as `STRIPE_WEBHOOK_SECRET`. Without the CLI, payments still settle through the sync call and the worker. `tests/integration/stripePayment.test.ts` signs its own events with the configured secret.
+
+## Polyglot persistence: which store for which data
+
+| Rule | Store (compose service) | Fed by | Use case | Consistency |
+|---|---|---|---|---|
+| Booking-critical state | PostgreSQL `postgres-primary` (+ replicas, optional shards) | booking-service, worker | seats, holds, bookings, payments, `stripe_events` | strong (primary, in transactions) |
+| High-churn documents | MongoDB `mongo` | `projection-service` queue `projection-live` | per-event live heat (holds per seat) and activity counters: `GET /api/events/:id/live` | eventual; `$inc`/`$max` are commutative, so order doesn't matter; dedupe by event id |
+| Relationship graph | Neo4j `neo4j` | `projection-service` queue `projection-graph` | `(User)-[:BOOKED]->(Event)-[:AT]->(Venue)`; "also booked" `GET /api/events/:id/also-booked`; admin `GET /api/admin/graph/events/:id` | eventual; MERGE-only, cancel is a flag, so it converges in any order |
+| Similarity search | OpenSearch k-NN index `events_vectors` | `search-service` (same indexing as keyword search) | "similar events" `GET /api/events/:id/similar` (HNSW, cosine) | eventual |
+| Keyword search | OpenSearch index `events` | `search-service` | unchanged `GET /api/search/events` | eventual |
+| Stats / dashboards | ClickHouse `clickhouse` | `analytics-service` | revenue (`payment.completed`), bookings, holds, now also `payment.failed` | eventual |
+| Membership checks | Redis bloom filters | api-*, booking-service, worker | email / event / booking / event-seat existence | negatives exact, positives verified in Postgres |
+| Remaining seats | Redis cache-aside `event:{id}:availability` | api-* (replica read on miss) | totals + `byTier` (VIP/PREMIUM/REGULAR × status) | invalidated on every hold/checkout/confirm/release; live per-seat updates over SSE |
+
+None of these are read on the booking path, and none hold a confirmed booking: they are rebuilt from domain events. Postgres stays the source of truth. Embeddings are a feature-hashed bag of words (`search-service/src/embedding.ts`). That is lexical rather than semantic similarity; to upgrade, swap that one function for a model.
+
+## Bloom filters across api-* nodes (and shards)
+
+The filters are bit arrays in Redis, not in process memory, so api-1/2/3 (and any number of coordinators) see one shared filter. A check is k pipelined `GETBIT`s in one round trip: O(k) = O(1), independent of user count. Under Redis Cluster each filter is one key, so one hash slot on one node, and the same check from any API node goes to the same place. With Postgres sharding enabled, the filter is the single global "might exist" check in front of per-shard lookups.
+
+- **Never a false negative.** Ids are added to the filter *before* the row is inserted (users, events, event-seats, bookings; ids are generated in the app). A failed insert leaves only a harmless false positive. Previously the add ran after the commit, so a Redis blip there left a committed user the filter called absent, and login rejected that user.
+- **Not trustworthy until populated.** A filter answers "absent" only after `populate()` sets its `:ready` marker. If Redis loses data the marker goes too, every check fails open, and the worker repopulates from Postgres.
+- **Uniqueness stays in the DB.** False positives fall through to Postgres; the `UNIQUE(email)` constraint is what actually decides.
+
 ## PostgreSQL primary/replica behavior
 
 `docker-compose.yml` runs a *real* streaming-replication cluster, not a simulation:
@@ -43,6 +95,8 @@ Because replication is asynchronous, a read immediately after a write on a *diff
 
 ## Idempotency
 
+Stripe webhooks dedupe on `stripe_events.id` (see above); PaymentIntents and refunds use Stripe idempotency keys.
+
 `POST /api/bookings` requires an `Idempotency-Key` header. The guarantee is enforced by the database itself: `bookings.idempotency_key` has a `UNIQUE` constraint. `createBooking()` does an optimistic pre-check (fast path: return the existing booking if the key is already known) but the actual safety net is catching the Postgres unique-violation (`P2002`) that occurs if two identical requests race past that pre-check simultaneously - whichever one loses the race just fetches and returns the winner's booking instead of erroring. See `tests/unit/idempotency.test.ts` and the second scenario in `tests/concurrency/seatRace.test.ts`.
 
 ## Failure handling summary
@@ -55,6 +109,10 @@ Because replication is asynchronous, a read immediately after a write on a *diff
 | RabbitMQ unavailable | No | Booking confirmation is unaffected (publish happens after commit and is caught/logged on failure); notifications/analytics/search fall behind until it recovers |
 | OpenSearch unavailable | No | `/api/search/events` returns a clean 503; direct event browsing (Postgres-backed) is unaffected |
 | ClickHouse unavailable | No | `/api/analytics/*` returns a clean 503; booking is unaffected |
+| Stripe unreachable at checkout | No | Checkout is released immediately and returns 503; seats go straight back to AVAILABLE |
+| Stripe unreachable at expiry | No | Seats stay HELD for at most `STRIPE_SETTLE_GRACE_SECONDS`, then are released; a payment that lands later is refunded |
+| Webhook lost / not forwarded | No | Worker reconciliation and `/payment/sync` read the PaymentIntent from Stripe and confirm it |
+| MongoDB or Neo4j unavailable | No | Checkout unaffected; `/live`, `/also-booked` and graph return 503; their queues retry, then dead-letter (`tests/failure/run-projection-failure.sh`) |
 | Seat hold expires mid-flow | N/A | `apps/worker` sweeps expired holds back to AVAILABLE every `WORKER_POLL_INTERVAL_MS`; a booking attempt against an expired hold is simply rejected by the transaction's status check |
 
 Executable versions of these scenarios live in `tests/failure/*.sh`.

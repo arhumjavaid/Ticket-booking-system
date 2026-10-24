@@ -6,7 +6,7 @@ import { metricsMiddleware, metricsEndpoint } from '@ticketing/metrics';
 import { errorHandler, notFoundHandler } from '@ticketing/shared';
 import { pingRedis } from '@ticketing/redis';
 import { writeDB } from '@ticketing/database';
-import { router } from './routes';
+import { router, stripeWebhook } from './routes';
 import { requireInternalToken } from './internalAuth';
 
 const app = express();
@@ -14,6 +14,9 @@ const PORT = parseInt(process.env.BOOKING_SERVICE_PORT || '4000', 10);
 
 app.use(helmet());
 app.use(cors());
+// Stripe signs the exact bytes it sent, so the webhook needs the raw body:
+// it is registered before express.json() can parse it away.
+app.post('/internal/payments/stripe/webhook', requireInternalToken, express.raw({ type: '*/*', limit: '1mb' }), stripeWebhook);
 app.use(express.json());
 app.use(requestContextMiddleware);
 app.use(metricsMiddleware);

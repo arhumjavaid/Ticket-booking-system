@@ -87,6 +87,21 @@ router.get(
   })
 );
 
+// After the browser's Stripe confirmation: settle from Stripe's own record of
+// the PaymentIntent (the webhook does the same; whichever lands first wins).
+router.post(
+  '/:id/payment/sync',
+  authenticate,
+  asyncHandler(async (req, res) => {
+    try {
+      const response = await bookingServiceClient.post(`/internal/bookings/${req.params.id}/payment/sync`, { userId: req.user!.sub });
+      res.status(response.status).json(response.data);
+    } catch (err) {
+      forwardServiceError(err, res, 'Booking service is currently unavailable');
+    }
+  })
+);
+
 router.post(
   '/:id/cancel',
   authenticate,

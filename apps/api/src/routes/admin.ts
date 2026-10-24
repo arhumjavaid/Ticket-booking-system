@@ -2,6 +2,8 @@ import { Router } from 'express';
 import { readDB } from '@ticketing/database';
 import { authenticate, authorize } from '@ticketing/auth';
 import { asyncHandler } from '@ticketing/shared';
+import { projectionServiceClient } from '../clients';
+import { forwardServiceError } from '../proxyError';
 
 export const router = Router();
 
@@ -26,5 +28,18 @@ router.get(
     );
 
     res.status(200).json({ success: true, data: users, pagination: { page, pageSize, total } });
+  })
+);
+
+// Neo4j relationship view (buyers -> bookings -> events -> venues) for one event.
+router.get(
+  '/graph/events/:eventId',
+  asyncHandler(async (req, res) => {
+    try {
+      const response = await projectionServiceClient.get(`/graph/events/${req.params.eventId}`);
+      res.status(200).json(response.data);
+    } catch (err) {
+      forwardServiceError(err, res, 'Graph view is temporarily unavailable');
+    }
   })
 );

@@ -1,7 +1,8 @@
 import { readDB } from '@ticketing/database';
 import type { DomainEvent } from '@ticketing/messaging';
 import { logger } from '@ticketing/logging';
-import { opensearch, INDEX_NAME } from './client';
+import { opensearch, INDEX_NAME, VECTOR_INDEX_NAME } from './client';
+import { embed } from './embedding';
 
 /**
  * The search index is eventually consistent by design (RULE 8 / section
@@ -35,24 +36,21 @@ async function indexEvent(eventId: string): Promise<void> {
 
   const availableSeats = await readDB.run((db) => db.eventSeat.count({ where: { eventId, status: 'AVAILABLE' } }));
 
-  await opensearch.index({
-    index: INDEX_NAME,
-    id: eventId,
-    body: {
-      eventId: record.id,
-      name: record.name,
-      description: record.description,
-      category: record.category,
-      venueName: record.venue.name,
-      city: record.venue.city,
-      tags: record.tags,
-      startsAt: record.startsAt,
-      basePrice: Number(record.basePrice),
-      status: record.status,
-      availableSeats,
-    },
-    refresh: true,
-  });
+  const body = {
+    eventId: record.id,
+    name: record.name,
+    description: record.description,
+    category: record.category,
+    venueName: record.venue.name,
+    city: record.venue.city,
+    tags: record.tags,
+    startsAt: record.startsAt,
+    basePrice: Number(record.basePrice),
+    status: record.status,
+    availableSeats,
+  };
+  await opensearch.index({ index: INDEX_NAME, id: eventId, body, refresh: true });
+  await opensearch.index({ index: VECTOR_INDEX_NAME, id: eventId, body: { ...body, embedding: embed(record) }, refresh: true });
 
   logger.info({ operation: 'search_index', status: 'indexed', eventId }, `Indexed event ${eventId} into OpenSearch`);
 }
