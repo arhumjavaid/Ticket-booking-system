@@ -9,7 +9,8 @@
     "prisma:generate": "prisma generate --schema prisma/schema.prisma",
     "migrate": "prisma migrate deploy --schema prisma/schema.prisma",
     "migrate:dev": "prisma migrate dev --schema prisma/schema.prisma",
-    "seed": "ts-node prisma/seed.ts"
+    "seed": "ts-node prisma/seed.ts",
+    "seed:scale": "ts-node prisma/seedScale.ts"
   },
   "dependencies": {
     "@prisma/client": "^5.20.0",

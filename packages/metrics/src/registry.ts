@@ -104,4 +104,17 @@ export const concurrentBookings = new client.Gauge({
   registers: [registry],
 });
 
+export const dbUsersTotal = new client.Gauge({
+  name: 'db_users_total',
+  help: 'Total rows in the users table (polled from Postgres by the worker)',
+  registers: [registry],
+});
+
+export const dbEventSeatsByStatus = new client.Gauge({
+  name: 'db_event_seats_by_status',
+  help: 'Event seat counts by status (polled from Postgres by the worker)',
+  labelNames: ['status'],
+  registers: [registry],
+});
+
 export { client };

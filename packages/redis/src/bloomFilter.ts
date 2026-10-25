@@ -113,6 +113,19 @@ export class BloomFilter {
   }
 
   /**
+   * Clears bits + ready marker. Callers must fail open until `markReady()`.
+   * Used when expected capacity changes (e.g. scale seed to 2M users) so
+   * hash modulus stays consistent with the bit array.
+   */
+  async reset(): Promise<void> {
+    await redis.del(this.key, this.readyKey);
+  }
+
+  async markReady(): Promise<void> {
+    await redis.set(this.readyKey, '1');
+  }
+
+  /**
    * Adds an authoritative list from the database, then marks the filter
    * trustworthy. Deliberately never clears existing bits: wiping first would
    * open a window of false negatives and drop items added concurrently (or
@@ -122,11 +135,12 @@ export class BloomFilter {
    */
   async populate(items: string[]): Promise<void> {
     await this.addMany(items);
-    await redis.set(this.readyKey, '1');
+    await this.markReady();
   }
 }
 
-export const usernameBloomFilter = new BloomFilter('usernames', 100_000, 0.01);
+// Sized for scale demos (SEED_USER_COUNT up to ~2M) + headroom for real signups.
+export const usernameBloomFilter = new BloomFilter('usernames', 2_000_000, 0.01);
 export const eventBloomFilter = new BloomFilter('events', 10_000, 0.01);
 export const bookingBloomFilter = new BloomFilter('bookings', 500_000, 0.01);
 export const eventSeatBloomFilter = new BloomFilter('event_seats', 1_000_000, 0.01);

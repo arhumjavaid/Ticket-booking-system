@@ -2,23 +2,122 @@
   "title": "Distributed Ticket Booking - Overview",
   "uid": "booking-overview",
   "schemaVersion": 39,
-  "version": 1,
+  "version": 2,
   "refresh": "5s",
   "time": { "from": "now-15m", "to": "now" },
+  "tags": ["ticketing", "overview"],
   "panels": [
     {
-      "id": 1, "title": "HTTP Requests/sec by instance", "type": "timeseries",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "id": 20,
+      "title": "Users in database",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }, { "color": "green", "value": 1000000 }] }
+        }
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "none" },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "max(db_users_total{job=\"worker\"})",
+          "legendFormat": "users",
+          "refId": "A",
+          "instant": true
+        }
+      ]
+    },
+    {
+      "id": 21,
+      "title": "API p50 latency",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "s", "decimals": 3 } },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "area" },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.50, sum(rate(http_request_duration_seconds_bucket{service=\"api\"}[1m])) by (le))",
+          "refId": "A",
+          "instant": true
+        }
+      ]
+    },
+    {
+      "id": 22,
+      "title": "API p95 latency",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "s", "decimals": 3 } },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "area" },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{service=\"api\"}[1m])) by (le))",
+          "refId": "A",
+          "instant": true
+        }
+      ]
+    },
+    {
+      "id": 23,
+      "title": "In-flight booking/hold ops",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "short" } },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "area" },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(concurrent_bookings)",
+          "refId": "A",
+          "instant": true
+        }
+      ]
+    },
+    {
+      "id": 1,
+      "title": "HTTP Requests/sec by instance",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
       "targets": [{ "expr": "sum(rate(http_requests_total[1m])) by (instance)", "legendFormat": "{{instance}}" }]
     },
     {
-      "id": 2, "title": "HTTP p95 latency", "type": "timeseries",
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
-      "targets": [{ "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[1m])) by (le, route))", "legendFormat": "{{route}}" }]
+      "id": 2,
+      "title": "HTTP latency p50 / p95 / p99 (all routes)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+      "fieldConfig": { "defaults": { "unit": "s" } },
+      "targets": [
+        { "expr": "histogram_quantile(0.50, sum(rate(http_request_duration_seconds_bucket[1m])) by (le))", "legendFormat": "p50" },
+        { "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[1m])) by (le))", "legendFormat": "p95" },
+        { "expr": "histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket[1m])) by (le))", "legendFormat": "p99" }
+      ]
     },
     {
-      "id": 3, "title": "Booking attempts vs success vs failure", "type": "timeseries",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "id": 24,
+      "title": "API response time by route (p95) — watch during concurrency / load",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 12 },
+      "fieldConfig": { "defaults": { "unit": "s" } },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{service=\"api\"}[1m])) by (le, route))",
+          "legendFormat": "{{route}}"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Booking attempts vs success vs failure",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 20 },
       "targets": [
         { "expr": "sum(rate(booking_attempts_total[1m]))", "legendFormat": "attempts" },
         { "expr": "sum(rate(booking_success_total[1m]))", "legendFormat": "success" },
@@ -26,34 +125,115 @@
       ]
     },
     {
-      "id": 4, "title": "Seat booking conflicts/sec", "type": "timeseries",
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "id": 4,
+      "title": "Seat booking conflicts/sec (uniqueness pressure)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 20 },
       "targets": [{ "expr": "sum(rate(seat_booking_conflict_total[1m]))", "legendFormat": "conflicts" }]
     },
     {
-      "id": 5, "title": "Redis cache hit ratio", "type": "timeseries",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "id": 25,
+      "title": "Seat holds by result/sec",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 28 },
+      "targets": [{ "expr": "sum(rate(seat_hold_total[1m])) by (result)", "legendFormat": "{{result}}" }]
+    },
+    {
+      "id": 26,
+      "title": "Event seats by status (Postgres)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 28 },
+      "targets": [{ "expr": "max(db_event_seats_by_status) by (status)", "legendFormat": "{{status}}" }]
+    },
+    {
+      "id": 5,
+      "title": "Redis cache hit ratio",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 36 },
       "targets": [
-        { "expr": "sum(rate(redis_cache_hits_total[1m])) / (sum(rate(redis_cache_hits_total[1m])) + sum(rate(redis_cache_misses_total[1m])))", "legendFormat": "hit ratio" }
+        {
+          "expr": "sum(rate(redis_cache_hits_total[1m])) / (sum(rate(redis_cache_hits_total[1m])) + sum(rate(redis_cache_misses_total[1m])))",
+          "legendFormat": "hit ratio"
+        }
       ]
     },
     {
-      "id": 6, "title": "Active connections & concurrent bookings", "type": "timeseries",
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "id": 6,
+      "title": "Active connections & concurrent bookings",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 36 },
       "targets": [
         { "expr": "sum(active_connections)", "legendFormat": "active connections" },
         { "expr": "sum(concurrent_bookings)", "legendFormat": "concurrent bookings" }
       ]
     },
     {
-      "id": 7, "title": "Queue processing failures/sec", "type": "timeseries",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 24 },
+      "id": 7,
+      "title": "Queue processing failures/sec",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 44 },
       "targets": [{ "expr": "sum(rate(queue_processing_failures_total[1m])) by (queue)", "legendFormat": "{{queue}}" }]
     },
     {
-      "id": 8, "title": "Database query duration p95", "type": "timeseries",
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 24 },
-      "targets": [{ "expr": "histogram_quantile(0.95, sum(rate(database_query_duration_seconds_bucket[1m])) by (le, operation))", "legendFormat": "{{operation}}" }]
+      "id": 8,
+      "title": "Database query duration p95",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 44 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(database_query_duration_seconds_bucket[1m])) by (le, operation))",
+          "legendFormat": "{{operation}}"
+        }
+      ]
+    },
+    {
+      "id": 27,
+      "title": "Users in DB (live SQL)",
+      "type": "stat",
+      "gridPos": { "h": 6, "w": 8, "x": 0, "y": 52 },
+      "datasource": { "type": "postgres", "uid": "postgres-ticketing" },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background", "graphMode": "none" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "postgres-ticketing" },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COUNT(*)::bigint AS users FROM users;",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 28,
+      "title": "Scale users vs demo users",
+      "type": "table",
+      "gridPos": { "h": 6, "w": 16, "x": 8, "y": 52 },
+      "datasource": { "type": "postgres", "uid": "postgres-ticketing" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "postgres-ticketing" },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT CASE WHEN email LIKE 'scale-user-%' THEN 'scale' WHEN email LIKE '%@ticketing.dev' THEN 'demo' ELSE 'other' END AS cohort, COUNT(*)::bigint AS users FROM users GROUP BY 1 ORDER BY users DESC;",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 29,
+      "title": "Recent users (sample from Postgres)",
+      "type": "table",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 58 },
+      "datasource": { "type": "postgres", "uid": "postgres-ticketing" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "postgres-ticketing" },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT email, name, role::text AS role, created_at FROM users ORDER BY created_at DESC LIMIT 25;",
+          "refId": "A"
+        }
+      ]
     }
   ]
 }

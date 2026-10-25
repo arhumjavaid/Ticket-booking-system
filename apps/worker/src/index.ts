@@ -3,9 +3,10 @@ import { writeDB } from '@ticketing/database';
 import { pingRedis } from '@ticketing/redis';
 import { logger } from '@ticketing/logging';
 import { metricsEndpoint } from '@ticketing/metrics';
-import { expirePendingCheckouts } from '@ticketing/booking-service/dist/services/paymentService';
+import { expirePendingCheckouts, reconcilePendingPayments } from '@ticketing/booking-service/dist/services/paymentService';
 import { sweepExpiredHolds } from './holdExpiry';
 import { rebuildBloomFilters, ensureBloomFilters } from './bloomRebuild';
+import { publishDbStats } from './dbStats';
 
 const PORT = parseInt(process.env.WORKER_PORT || '4500', 10);
 const POLL_INTERVAL_MS = parseInt(process.env.WORKER_POLL_INTERVAL_MS || '5000', 10);
@@ -16,13 +17,19 @@ let running = true;
 async function loop(): Promise<void> {
   while (running) {
     try {
-      // Checkouts first: each one cancels its PaymentIntent (or confirms it,
-      // if Stripe says it was paid) before its seats are released.
+      // Poll Stripe for PENDING PaymentIntents (webhook-free confirmation),
+      // then settle expired windows, then release orphan holds.
+      await reconcilePendingPayments();
       await expirePendingCheckouts();
       await sweepExpiredHolds();
       lastSweepAt = Date.now();
     } catch (err) {
       logger.error({ operation: 'workerLoop', status: 'error' }, `Sweep failed: ${(err as Error).message}`);
+    }
+    try {
+      await publishDbStats();
+    } catch (err) {
+      logger.error({ operation: 'workerLoop', status: 'error' }, `DB stats failed: ${(err as Error).message}`);
     }
     try {
       await ensureBloomFilters();

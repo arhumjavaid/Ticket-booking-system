@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { validateBody, asyncHandler } from '@ticketing/shared';
+import { concurrentBookings } from '@ticketing/metrics';
 import { holdSeat, releaseSeatHold } from './services/holdService';
 import { createBooking } from './services/bookingService';
 import { cancelBooking } from './services/cancelService';
@@ -8,13 +9,24 @@ import { handleStripeWebhook, syncPayment } from './services/paymentService';
 
 export const router = Router();
 
+async function withConcurrencyGauge<T>(fn: () => Promise<T>): Promise<T> {
+  concurrentBookings.inc();
+  try {
+    return await fn();
+  } finally {
+    concurrentBookings.dec();
+  }
+}
+
 const holdSchema = z.object({ seatId: z.string().uuid(), userId: z.string().uuid() });
 
 router.post(
   '/internal/events/:eventId/seats/hold',
   validateBody(holdSchema),
   asyncHandler(async (req, res) => {
-    const result = await holdSeat({ eventId: req.params.eventId, seatId: req.body.seatId, userId: req.body.userId });
+    const result = await withConcurrencyGauge(() =>
+      holdSeat({ eventId: req.params.eventId, seatId: req.body.seatId, userId: req.body.userId })
+    );
     res.status(201).json({ success: true, data: result });
   })
 );
@@ -39,7 +51,7 @@ router.post(
   '/internal/bookings',
   validateBody(bookingSchema),
   asyncHandler(async (req, res) => {
-    const result = await createBooking(req.body);
+    const result = await withConcurrencyGauge(() => createBooking(req.body));
     res.status(result.idempotent ? 200 : 201).json({ success: true, data: result });
   })
 );

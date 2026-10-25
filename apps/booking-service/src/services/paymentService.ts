@@ -18,9 +18,15 @@ type FinalStatus = 'EXPIRED' | 'FAILED' | 'CANCELLED';
 
 /** Verifies the Stripe signature over the raw body, then applies the event. */
 export async function handleStripeWebhook(rawBody: Buffer, signature: string | undefined): Promise<{ type: string; outcome: string }> {
+  const secret = webhookSecret();
+  if (!secret) {
+    throw new ValidationError(
+      'Stripe webhooks are not configured. Local confirmation uses payment/sync + the worker Stripe poller instead.'
+    );
+  }
   let event: Stripe.Event;
   try {
-    event = getStripe().webhooks.constructEvent(rawBody, signature || '', webhookSecret());
+    event = getStripe().webhooks.constructEvent(rawBody, signature || '', secret);
   } catch (err) {
     throw new ValidationError(`Invalid Stripe webhook: ${(err as Error).message}`);
   }
@@ -216,6 +222,45 @@ async function releaseCheckout(bookingId: string, finalStatus: FinalStatus, reas
   ]);
   logger.info({ operation: 'releaseCheckout', bookingId, status: finalStatus }, `Checkout ${reason}, seats released`);
   return true;
+}
+
+/**
+ * Local cron-style reconciliation (no webhook required): poll Stripe for
+ * every PENDING checkout that already has a PaymentIntent and confirm or
+ * fail from Stripe's own status. Runs on the worker every poll interval.
+ */
+export async function reconcilePendingPayments(): Promise<number> {
+  const pending = await writeDB.booking.findMany({
+    where: { status: 'PENDING', payment: { is: { transactionRef: { not: null } } } },
+    include: { payment: true },
+    orderBy: { createdAt: 'asc' },
+    take: 50,
+  });
+  let confirmed = 0;
+  for (const booking of pending) {
+    const intentId = booking.payment?.transactionRef;
+    if (!intentId) continue;
+    try {
+      const intent = await getStripe().paymentIntents.retrieve(intentId);
+      if (intent.status === 'succeeded') {
+        const outcome = await confirmPaymentIntent(intent);
+        if (outcome === 'confirmed' || outcome === 'already_confirmed') confirmed++;
+      } else if (intent.status === 'canceled') {
+        await abandonCheckout(booking.id, 'FAILED', 'payment_canceled');
+      }
+      // requires_payment_method / processing / requires_action: leave PENDING
+      // until the user pays, payment/sync runs, or the window expires.
+    } catch (err) {
+      logger.error(
+        { operation: 'reconcilePendingPayments', bookingId: booking.id, status: 'error' },
+        (err as Error).message
+      );
+    }
+  }
+  if (confirmed > 0) {
+    logger.info({ operation: 'reconcilePendingPayments', status: 'success' }, `Confirmed ${confirmed} booking(s) from Stripe poll`);
+  }
+  return confirmed;
 }
 
 /** Worker entry point: settles every PENDING checkout whose payment window has closed. */

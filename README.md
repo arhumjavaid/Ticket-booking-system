@@ -67,15 +67,42 @@ docker exec distributed-ticket-booking-postgres-replica-1-1 \
 
 **In the browser**: register an account, browse seeded events, open one, click a few seats (they turn HELD), and open the same event in a second tab/browser as another user - you'll see availability update live over Server-Sent Events as the first tab holds/books seats. Log in as `admin@ticketing.dev` to create venues/events and view the analytics dashboard.
 
-**Prove the double-booking guarantee yourself**:
+### Scale demo: 1M–2M users + concurrency + Grafana
+
+**1. Seed synthetic users** (shared password `Password123!`, emails `scale-user-{n}@ticketing.dev`):
+
+```bash
+# 1 million (default) — first run can take several minutes
+bash scripts/seed-scale-users.sh
+
+# or 2 million
+SEED_USER_COUNT=2000000 bash scripts/seed-scale-users.sh
+```
+
+**2. Open Grafana** while you race seats: [http://localhost:3001](http://localhost:3001) (`admin` / `admin`) → dashboard **Distributed Ticket Booking - Overview**.
+
+Watch these panels during the race / under load:
+
+| Panel | What it shows |
+|---|---|
+| Users in database | Live `COUNT(*)` via Prometheus (`db_users_total`) + SQL |
+| API p50 / p95 / p99 | Real-time HTTP latency under concurrent traffic |
+| API response time by route (p95) | Which endpoints slow down (holds, bookings, …) |
+| In-flight booking/hold ops | `concurrent_bookings` gauge spike during the race |
+| Seat booking conflicts/sec | Losers of the same-seat race (`409` pressure) |
+| Event seats by status | AVAILABLE / HELD / BOOKED inventory from Postgres |
+| Recent users / scale vs demo | Direct Postgres tables in Grafana |
+
+**3. Prove one seat → one user** (through Nginx → api-1/2/3):
 
 ```bash
 npm install
-EVENT_ID=$(curl -s http://localhost:8080/api/events | node -e "process.stdin.once('data',d=>console.log(JSON.parse(d).data[0].id))")
-SEAT_RACE_USERS=100 npx jest --config tests/jest.concurrency.config.js
+bash scripts/demo-scale-uniqueness.sh
+# or: SEAT_RACE_USERS=100 npm run test:concurrency
+# louder demo: SEAT_RACE_USERS=500 npm run test:concurrency
 ```
 
-Expect exactly one `201` and ninety-nine `409`s for the same seat, every time.
+Expect exactly **one** `201` and **N−1** `409`s for the same seat, every time. The script also prints Postgres checks so you can show uniqueness in SQL alongside Grafana.
 
 ## Project structure
 
@@ -113,9 +140,12 @@ docs/  architecture, ERD, API reference, concurrency, distributed-systems, produ
 npm run test:unit          # bloom filter, lock, cache, rate limiter, shard router, idempotency - no infra needed
 npm run test:integration   # real Postgres/Redis/RabbitMQ - requires infra containers up
 npm run test:concurrency   # 100-way seat race through Nginx - requires the full stack up
+npm run seed:scale         # bulk users (SEED_USER_COUNT, default 1e6) — prefer scripts/seed-scale-users.sh in Docker
 ```
 
 Load tests (k6) and failure-injection scripts are documented separately in `docs/LOAD_TESTING.md` and run via `tests/failure/run-*.sh` (they call `docker compose stop/start` on individual services and assert on observed behavior).
+
+Concurrency + Grafana walkthrough: see [Try it → Scale demo](#scale-demo-1m2m-users--concurrency--grafana) above.
 
 ## Documentation index
 
@@ -129,6 +159,7 @@ Load tests (k6) and failure-injection scripts are documented separately in `docs
 | [`docs/DISTRIBUTED_SYSTEMS.md`](docs/DISTRIBUTED_SYSTEMS.md) | Replication, sharding, consistency model, double-booking prevention |
 | [`docs/CONCURRENCY.md`](docs/CONCURRENCY.md) | Why locking + transactions + optimistic versioning all coexist |
 | [`docs/LOAD_TESTING.md`](docs/LOAD_TESTING.md) | k6 scenarios and how to read the results |
+| [`docs/SCALE_AND_GRAFANA.md`](docs/SCALE_AND_GRAFANA.md) | 1M–2M user seed, concurrency race, Grafana panels for users/latency/conflicts |
 | [`docs/PRODUCTION.md`](docs/PRODUCTION.md) | What changes to run this for real, and why each local simplification exists |
 
 ## Design rules this codebase follows

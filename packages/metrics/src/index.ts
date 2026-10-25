@@ -14,5 +14,7 @@ export {
   databaseQueryDuration,
   activeConnections,
   concurrentBookings,
+  dbUsersTotal,
+  dbEventSeatsByStatus,
 } from './registry';
 export { metricsMiddleware, metricsEndpoint } from './middleware';

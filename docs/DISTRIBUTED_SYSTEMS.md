@@ -14,7 +14,12 @@ Verified by `tests/concurrency/seatRace.test.ts`, which fires N (default 100) si
 
 ## Booking + payment flow (Stripe)
 
-One model, end to end: **hold → PENDING booking + Stripe PaymentIntent → verified webhook confirms.**
+One model, end to end: **hold → PENDING booking + Stripe PaymentIntent → confirm from Stripe's API (webhook optional).**
+
+Confirmation paths (any one is enough; no `stripe listen` required locally):
+1. Frontend `POST /bookings/:id/payment/sync` after Payment Element success
+2. Worker `reconcilePendingPayments()` — polls PENDING PaymentIntents every `WORKER_POLL_INTERVAL_MS`
+3. Optional webhook `payment_intent.succeeded` when `STRIPE_WEBHOOK_SECRET` is set
 
 ```
 select seat ──► POST /events/:id/seats/hold        seat AVAILABLE → HELD (hold_expires_at = now + SEAT_HOLD_TTL_SECONDS)
@@ -39,7 +44,7 @@ Guarantees:
 - **Never stuck HELD.** The worker settles `PENDING` bookings past `expires_at` from Postgres, not Redis. It cancels the PaymentIntent, or confirms it if Stripe says it was paid (a missed webhook). If Stripe is unreachable it waits at most `STRIPE_SETTLE_GRACE_SECONDS` after the window, then releases anyway; a later success is refunded. The generic hold sweep and `holdSeat()` takeover both skip seats in a `PENDING` checkout, so nobody can grab a seat whose payment may still be landing.
 - **Declined card ≠ release.** `payment_intent.payment_failed` keeps the checkout open: the Payment Element retries on the same intent while the hold lasts. `payment_intent.canceled`, the user's cancel, or expiry release the seats.
 
-Local webhooks: `stripe listen --forward-to localhost:8080/api/payments/stripe/webhook`, then put the printed `whsec_...` in `.env` as `STRIPE_WEBHOOK_SECRET`. Without the CLI, payments still settle through the sync call and the worker. `tests/integration/stripePayment.test.ts` signs its own events with the configured secret.
+Local webhooks are optional. Without `stripe listen`, payments settle through `payment/sync` and the worker Stripe poller (`reconcilePendingPayments`). If you do use the CLI, put the printed `whsec_...` in `.env` as `STRIPE_WEBHOOK_SECRET`. Integration tests that exercise the webhook route need that secret set.
 
 ## Polyglot persistence: which store for which data
 

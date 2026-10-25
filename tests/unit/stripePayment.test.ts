@@ -189,6 +189,14 @@ describe('Ending an unpaid checkout (expiry / cancel)', () => {
 });
 
 describe('Stripe webhook endpoint', () => {
+  it('explains that webhooks are optional when STRIPE_WEBHOOK_SECRET is unset', async () => {
+    const prev = process.env.STRIPE_WEBHOOK_SECRET;
+    process.env.STRIPE_WEBHOOK_SECRET = '';
+    await expect(handleStripeWebhook(Buffer.from('{}'), 'sig')).rejects.toThrow(/payment\/sync|worker Stripe poller/);
+    process.env.STRIPE_WEBHOOK_SECRET = prev;
+    expect(writeDB.$transaction).not.toHaveBeenCalled();
+  });
+
   it('rejects a payload whose signature does not verify', async () => {
     stripeApi.webhooks.constructEvent.mockImplementation(() => {
       throw new Error('No signatures found matching the expected signature');

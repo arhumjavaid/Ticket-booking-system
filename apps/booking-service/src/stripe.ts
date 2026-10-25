@@ -8,15 +8,22 @@ let client: Stripe | null = null;
 
 /** Lazily built so the service (and unit tests) start without Stripe keys; paying needs them. */
 export function getStripe(): Stripe {
-  const key = process.env.STRIPE_SECRET_KEY;
-  if (!key) throw new ServiceUnavailableError('Payments are not configured (STRIPE_SECRET_KEY is unset)');
+  const key = (process.env.STRIPE_SECRET_KEY || '').trim();
+  if (!key || key.includes('replace_me')) {
+    throw new ServiceUnavailableError('Payments are not configured (set a real STRIPE_SECRET_KEY in .env and recreate booking-service)');
+  }
   client ??= new Stripe(key, { maxNetworkRetries: 2, timeout: 8000 });
   return client;
 }
 
-export function webhookSecret(): string {
-  const secret = process.env.STRIPE_WEBHOOK_SECRET;
-  if (!secret) throw new ServiceUnavailableError('Stripe webhooks are not configured (STRIPE_WEBHOOK_SECRET is unset)');
+/**
+ * Webhooks are optional locally: confirmation also happens via
+ * POST /bookings/:id/payment/sync and the worker's Stripe poller.
+ * Only the webhook HTTP route needs this secret.
+ */
+export function webhookSecret(): string | null {
+  const secret = (process.env.STRIPE_WEBHOOK_SECRET || '').trim();
+  if (!secret || secret.includes('replace_me')) return null;
   return secret;
 }
 
