@@ -1,0 +1,296 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Ticket Booking System — Runtime Architecture",
+    "quality_profile": "showcase",
+    "viewBox": [
+      1080,
+      480
+    ]
+  },
+  "components": [
+    {
+      "id": "browser",
+      "type": "external",
+      "label": "Browser",
+      "sublabel": "React SPA",
+      "brand": "react",
+      "pos": [
+        40,
+        210
+      ],
+      "size": [
+        140,
+        64
+      ]
+    },
+    {
+      "id": "nginx",
+      "type": "cloud",
+      "label": "Nginx",
+      "sublabel": "public :8080",
+      "pos": [
+        240,
+        210
+      ],
+      "size": [
+        140,
+        64
+      ],
+      "tag": "least-conn LB"
+    },
+    {
+      "id": "api",
+      "type": "backend",
+      "label": "API ×3",
+      "sublabel": "api-1..3 :3000",
+      "pos": [
+        440,
+        210
+      ],
+      "size": [
+        140,
+        64
+      ]
+    },
+    {
+      "id": "booking",
+      "type": "backend",
+      "label": "Booking Service",
+      "sublabel": ":4000 internal",
+      "pos": [
+        660,
+        210
+      ],
+      "size": [
+        150,
+        64
+      ]
+    },
+    {
+      "id": "postgres",
+      "type": "database",
+      "label": "PostgreSQL",
+      "sublabel": "primary + replicas",
+      "brand": "postgresql",
+      "pos": [
+        890,
+        210
+      ],
+      "size": [
+        150,
+        64
+      ]
+    },
+    {
+      "id": "redis",
+      "type": "database",
+      "label": "Redis",
+      "sublabel": "locks · cache · bloom",
+      "brand": "redis",
+      "pos": [
+        660,
+        50
+      ],
+      "size": [
+        150,
+        64
+      ]
+    },
+    {
+      "id": "stripe",
+      "type": "external",
+      "label": "Stripe",
+      "sublabel": "PaymentIntents",
+      "brand": "stripe",
+      "pos": [
+        890,
+        50
+      ],
+      "size": [
+        150,
+        64
+      ]
+    },
+    {
+      "id": "rabbitmq",
+      "type": "messagebus",
+      "label": "RabbitMQ",
+      "sublabel": "booking.events",
+      "brand": "rabbitmq",
+      "pos": [
+        660,
+        350
+      ],
+      "size": [
+        150,
+        64
+      ]
+    },
+    {
+      "id": "worker",
+      "type": "backend",
+      "label": "Worker",
+      "sublabel": "expiry · reconcile",
+      "pos": [
+        890,
+        350
+      ],
+      "size": [
+        150,
+        64
+      ]
+    },
+    {
+      "id": "consumers",
+      "type": "backend",
+      "label": "Async Consumers",
+      "sublabel": "search · analytics · projection",
+      "pos": [
+        440,
+        350
+      ],
+      "size": [
+        160,
+        64
+      ]
+    },
+    {
+      "id": "readmodels",
+      "type": "database",
+      "label": "Read Models",
+      "sublabel": "OpenSearch · ClickHouse · Mongo · Neo4j",
+      "pos": [
+        180,
+        350
+      ],
+      "size": [
+        200,
+        64
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "Docker Compose network",
+      "wraps": [
+        "nginx",
+        "api",
+        "booking",
+        "postgres",
+        "redis",
+        "rabbitmq",
+        "worker",
+        "consumers",
+        "readmodels"
+      ]
+    },
+    {
+      "kind": "security-group",
+      "label": "internal token only",
+      "wraps": [
+        "booking"
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "browser-nginx",
+      "from": "browser",
+      "to": "nginx",
+      "label": "HTTPS",
+      "variant": "emphasis"
+    },
+    {
+      "id": "nginx-api",
+      "from": "nginx",
+      "to": "api",
+      "label": "/api",
+      "variant": "emphasis"
+    },
+    {
+      "id": "api-booking",
+      "from": "api",
+      "to": "booking",
+      "label": "JWT → internal",
+      "variant": "security"
+    },
+    {
+      "id": "booking-postgres",
+      "from": "booking",
+      "to": "postgres",
+      "label": "tx",
+      "variant": "emphasis"
+    },
+    {
+      "id": "booking-redis",
+      "from": "booking",
+      "to": "redis",
+      "label": "seat locks",
+      "labelDy": -24
+    },
+    {
+      "id": "booking-stripe",
+      "from": "booking",
+      "to": "stripe",
+      "label": "PaymentIntent",
+      "variant": "dashed",
+      "fromSide": "top",
+      "toSide": "left"
+    },
+    {
+      "id": "booking-rabbit",
+      "from": "booking",
+      "to": "rabbitmq",
+      "label": "domain events",
+      "variant": "dashed",
+      "labelDy": 24
+    },
+    {
+      "id": "worker-postgres",
+      "from": "worker",
+      "to": "postgres",
+      "label": "expire"
+    },
+    {
+      "id": "rabbit-consumers",
+      "from": "rabbitmq",
+      "to": "consumers",
+      "variant": "dashed"
+    },
+    {
+      "id": "consumers-readmodels",
+      "from": "consumers",
+      "to": "readmodels",
+      "label": "project"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "emerald",
+      "title": "Primary path: book a seat",
+      "items": [
+        "Hold → PENDING booking + Stripe PaymentIntent",
+        "Signed webhook (via Nginx → API) confirms: seats BOOKED"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Trust boundaries",
+      "items": [
+        "Only Nginx is public; Browser and Stripe are untrusted",
+        "API verifies JWT; booking-service requires x-internal-token"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "Background & infra",
+      "items": [
+        "Worker expires holds and reconciles payments",
+        "Read models are eventual; Postgres is the source of truth; Prometheus + Grafana scrape all services"
+      ]
+    }
+  ]
+}
